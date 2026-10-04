@@ -1,7 +1,8 @@
 const STOP = new Set([
   "a","an","and","are","as","at","be","by","for","from","how","in","is","it","of",
   "on","or","that","the","this","to","what","when","where","which","who","why","with",
-  "latest","recent","news","today","update","updates","best","top","biggest"
+  "do","does","did","done","can","could","should","would","will","may","might","must",
+  "have","has","had","latest","recent","news","today","update","updates","best","top","biggest"
 ]);
 
 const GENERIC_TECH = new Set([
@@ -13,6 +14,7 @@ const GENERIC_PRECISION = new Set([
   "best","top","biggest","open","source","alternative","alternatives","compare","comparison",
   "versus","documentation","docs","tutorial","guide","official","community","developer",
   "implementation","latest","recent","news","today","update","updates","decision",
+  "tune","tuning","tradeoff","tradeoffs","differ","difference","differences","affect","affects",
   "october","september","august","july","june","may","april","march","february","january",
   "november","december","search","policy","rate","bank"
 ]);
@@ -50,10 +52,13 @@ function inferBrand(q, content) {
   const alt = String(q).match(/\balternatives?\s+to\s+([A-Za-z0-9._-]+)/i);
   if (alt?.[1]) return alt[1].toLowerCase();
 
+  if (!/\b(official|documentation|docs|website|site)\b/i.test(q)) return null;
+
   return content.find((t) =>
     t.length >= 5 &&
     !GENERIC_PRECISION.has(t) &&
     !GENERIC_TECH.has(t) &&
+    !["pgvector","hnsw","ivfflat","ef_construction"].includes(t) &&
     !/^20\d{2}$/.test(t)
   ) || null;
 }
@@ -71,7 +76,7 @@ export function analyzeQuery(query) {
 
   const news = explicitNews || temporalFinance || temporalEvent;
   const tutorial = /\b(tutorial|guide|how to|example|examples|docs|documentation|learn|setup|install|implementation)\b/i.test(q);
-  const technical = /\b(api|sdk|code|developer|programming|crawler|scraper|vector|embedding|database|agent|agents|rag|llm|github|npm|python|javascript|mongodb|mongot|playwright)\b/i.test(q);
+  const technical = /\b(api|sdk|code|developer|programming|crawler|scraper|vector|embedding|database|agent|agents|rag|llm|github|npm|python|javascript|mongodb|mongot|playwright|pgvector|postgres|postgresql|hnsw|ivfflat|ef_construction)\b/i.test(q);
   const comparison = /\b(alternative|alternatives|compare|comparison|versus|\bvs\.?\b|replacement|competitor|competitors)\b/i.test(q);
   const commercial = /\b(price|pricing|cost|buy|product|vendor|provider)\b/i.test(q);
 
