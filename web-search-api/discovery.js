@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 7;
+const DISCOVERY_CACHE_VERSION = 8;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -461,6 +461,18 @@ async function runVariant(query, analysis, limit) {
 
   if (analysis.intent === "technical_comparison") {
     try {
+      const found = await discoverBingHtml(query, limit);
+      rows.push(...found);
+      attempts.push({ provider: "bing-html", query, ok: found.length > 0 });
+      const focused = fuse(rows, analysis, limit);
+      if (focused.length >= Math.min(3, limit)) {
+        return { rows, attempts };
+      }
+    } catch (error) {
+      attempts.push({ provider: "bing-html", query, ok: false, error: error?.message });
+    }
+
+    try {
       const found = await discoverGitHubRepositories(analysis, limit);
       rows.push(...found);
       attempts.push({ provider: "github-repositories", query: analysis.comparisonTarget || query, ok: found.length > 0 });
@@ -476,13 +488,11 @@ async function runVariant(query, analysis, limit) {
       const found = await discoverDuckDuckGoLite(query, limit);
       rows.push(...found);
       attempts.push({ provider: "duckduckgo-lite", query, ok: found.length > 0 });
-      const focused = fuse(rows, analysis, limit);
-      if (focused.length >= Math.min(5, limit)) {
-        return { rows, attempts };
-      }
     } catch (error) {
       attempts.push({ provider: "duckduckgo-lite", query, ok: false, error: error?.message });
     }
+
+    return { rows, attempts };
   }
 
   if (process.env.SEARCH_DISCOVERY_BASE_URL) {
@@ -514,7 +524,7 @@ async function runVariant(query, analysis, limit) {
     }
   }
 
-  if ((!rows.length || analysis.intent.startsWith("technical")) && analysis.intent !== "technical_comparison") {
+  if (!rows.length || analysis.intent.startsWith("technical")) {
     try {
       const found = await discoverDuckDuckGo(query, limit);
       rows.push(...found);
