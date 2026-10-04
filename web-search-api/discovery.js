@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 31;
+const DISCOVERY_CACHE_VERSION = 32;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -1011,6 +1011,10 @@ async function runVariant(query, analysis, limit) {
     if (focused.length && focused[0].relevance >= 8) {
       return { rows, attempts };
     }
+
+    // Strict technical variants are already bounded and evidence-verified above.
+    // Return now so later rewritten variants get their own discovery budget.
+    return { rows, attempts };
   }
 
   if (process.env.SEARCH_DISCOVERY_BASE_URL) {
