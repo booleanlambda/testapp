@@ -115,6 +115,9 @@ export async function liveSearch(query, options = {}) {
     mode: "live",
     discovery: {
       provider: discovery.provider,
+      intent: discovery.intent,
+      anchors: discovery.anchors,
+      effectiveQueries: discovery.effectiveQueries,
       cached: discovery.cached,
       discoveredAt: discovery.discoveredAt,
       resultCount: discovery.results.length
