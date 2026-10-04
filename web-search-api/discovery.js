@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 6;
+const DISCOVERY_CACHE_VERSION = 7;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -198,6 +198,63 @@ async function discoverBingHtml(query, limit) {
   });
 
   return normalizeRows(rows.slice(0, Math.max(limit, 20)), "bing-html");
+}
+
+async function discoverGitHubRepositories(analysis, limit) {
+  const target = analysis.comparisonTarget || analysis.brand;
+  if (!target) return [];
+
+  const queries = [
+    `${target} alternative in:name,description,readme`,
+    `${target} replacement in:name,description,readme`
+  ];
+
+  const rows = [];
+  for (const query of queries) {
+    const url = new URL("https://api.github.com/search/repositories");
+    url.searchParams.set("q", query);
+    url.searchParams.set("sort", "stars");
+    url.searchParams.set("order", "desc");
+    url.searchParams.set("per_page", String(Math.min(10, Math.max(limit, 6))));
+
+    const headers = {
+      "user-agent": DISCOVERY_UA,
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28"
+    };
+    if (process.env.GITHUB_DISCOVERY_TOKEN) {
+      headers.authorization = `Bearer ${process.env.GITHUB_DISCOVERY_TOKEN}`;
+    }
+
+    let response;
+    try {
+      response = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(10000)
+      });
+    } catch {
+      continue;
+    }
+
+    if (!response.ok) continue;
+
+    const json = await response.json();
+    for (const item of json?.items || []) {
+      rows.push({
+        title: item.full_name || item.name,
+        url: item.html_url,
+        snippet: [
+          item.description,
+          item.stargazers_count != null ? `GitHub stars: ${item.stargazers_count}` : null
+        ].filter(Boolean).join(" — "),
+        publishedAt: item.updated_at || null
+      });
+    }
+
+    if (rows.length >= limit) break;
+  }
+
+  return normalizeRows(rows.slice(0, Math.max(limit, 10)), "github-repositories");
 }
 
 async function discoverDuckDuckGoHtml(query, limit) {
@@ -404,10 +461,23 @@ async function runVariant(query, analysis, limit) {
 
   if (analysis.intent === "technical_comparison") {
     try {
+      const found = await discoverGitHubRepositories(analysis, limit);
+      rows.push(...found);
+      attempts.push({ provider: "github-repositories", query: analysis.comparisonTarget || query, ok: found.length > 0 });
+      const focused = fuse(rows, analysis, limit);
+      if (focused.length >= Math.min(3, limit)) {
+        return { rows, attempts };
+      }
+    } catch (error) {
+      attempts.push({ provider: "github-repositories", query: analysis.comparisonTarget || query, ok: false, error: error?.message });
+    }
+
+    try {
       const found = await discoverDuckDuckGoLite(query, limit);
       rows.push(...found);
       attempts.push({ provider: "duckduckgo-lite", query, ok: found.length > 0 });
-      if (found.length >= Math.min(5, limit)) {
+      const focused = fuse(rows, analysis, limit);
+      if (focused.length >= Math.min(5, limit)) {
         return { rows, attempts };
       }
     } catch (error) {
