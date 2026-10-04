@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 36;
+const DISCOVERY_CACHE_VERSION = 37;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -584,14 +584,55 @@ async function discoverGitHubTechnical(analysis, limit) {
 }
 
 function officialEntityTerms(analysis) {
-  const primary = String((analysis.anchors || [])[0] || "").toLowerCase();
   const aliases = new Map([
     ["postgres", ["postgres", "postgresql"]],
     ["postgresql", ["postgresql", "postgres"]],
+    ["mongodb", ["mongodb"]],
     ["nodejs", ["nodejs", "node.js"]],
-    ["k8s", ["k8s", "kubernetes"]]
+    ["node.js", ["node.js", "nodejs"]],
+    ["k8s", ["k8s", "kubernetes"]],
+    ["kubernetes", ["kubernetes", "k8s"]]
   ]);
+
+  const candidates = [
+    String(analysis.brand || "").toLowerCase(),
+    ...(analysis.anchors || []).map((x) => String(x).toLowerCase())
+  ].filter(Boolean);
+
+  const primary =
+    candidates.find((candidate) => aliases.has(candidate)) ||
+    candidates[0] ||
+    "";
+
   return [...new Set(aliases.get(primary) || (primary ? [primary] : []))];
+}
+
+function officialTechnicalHosts(analysis) {
+  const hostMap = new Map([
+    ["postgres", ["postgresql.org"]],
+    ["postgresql", ["postgresql.org"]],
+    ["mongodb", ["mongodb.com"]],
+    ["nodejs", ["nodejs.org"]],
+    ["node.js", ["nodejs.org"]],
+    ["k8s", ["kubernetes.io"]],
+    ["kubernetes", ["kubernetes.io"]]
+  ]);
+
+  const keys = [
+    String(analysis.brand || "").toLowerCase(),
+    ...officialEntityTerms(analysis)
+  ].filter(Boolean);
+
+  const hosts = [];
+  for (const key of keys) {
+    for (const host of hostMap.get(key) || []) hosts.push(host);
+  }
+
+  if (!hosts.length && analysis.brand) {
+    hosts.push(`${String(analysis.brand).toLowerCase()}.com`);
+  }
+
+  return [...new Set(hosts)];
 }
 
 function looksLikeOfficialTechnicalRow(row, analysis) {
@@ -604,6 +645,16 @@ function looksLikeOfficialTechnicalRow(row, analysis) {
     host = new URL(row.url).hostname.toLowerCase().replace(/^www\./, "");
   } catch {}
 
+  const officialHosts = officialTechnicalHosts(analysis);
+  if (
+    officialHosts.length &&
+    !officialHosts.some((officialHost) =>
+      host === officialHost || host.endsWith(`.${officialHost}`)
+    )
+  ) {
+    return false;
+  }
+
   const hostFlat = host.replace(/[^a-z0-9]/g, "");
   const entityMatched = terms.some((term) => {
     const flat = term.replace(/[^a-z0-9]/g, "");
@@ -614,7 +665,9 @@ function looksLikeOfficialTechnicalRow(row, analysis) {
   return (
     /\/docs?\//.test(row.url || "") ||
     /documentation|docs|manual|reference|configuration/.test(hay) ||
-    terms.some((term) => hostFlat === term.replace(/[^a-z0-9]/g, "") + "org")
+    officialHosts.some((officialHost) =>
+      host === officialHost || host.endsWith(`.${officialHost}`)
+    )
   );
 }
 
@@ -622,29 +675,49 @@ async function discoverOfficialTechnicalRows(analysis, limit) {
   const terms = officialEntityTerms(analysis);
   if (!terms.length) return [];
 
+  const hosts = officialTechnicalHosts(analysis);
   const entity = terms.length > 1 ? terms[1] : terms[0];
   const distinctive = (analysis.precisionAnchors || [])
     .filter((x) => !terms.includes(String(x).toLowerCase()))
-    .slice(0, 4)
-    .join(" ");
+    .slice(0, 4);
+  const phraseTerms = (analysis.phrases || [])
+    .filter((x) => x !== "agent")
+    .slice(0, 2);
 
-  const query = `${entity} official documentation ${distinctive}`
-    .replace(/\s+/g, " ")
-    .trim();
+  const targetedQuery = [
+    hosts[0] ? `site:${hosts[0]}` : "",
+    ...distinctive,
+    ...phraseTerms,
+    "documentation"
+  ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 
-  const [bingRows, ddgRows] = await Promise.all([
-    boundedValue(discoverBingHtml(query, Math.max(limit, 10)), 4800, []),
-    boundedValue(discoverDuckDuckGoHtml(query, Math.max(limit, 10)), 4800, [])
-  ]);
+  const broadQuery = [
+    entity,
+    "official documentation",
+    ...distinctive.slice(0, 3),
+    ...phraseTerms.slice(0, 1)
+  ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 
-  const raw = [...bingRows, ...ddgRows];
-  const seen = new Set();
-  const candidates = raw.filter((row) => {
-    const key = canonicalResultKey(row.url);
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return looksLikeOfficialTechnicalRow(row, analysis);
-  });
+  const collect = async (query) => {
+    const [bingRows, ddgRows] = await Promise.all([
+      boundedValue(discoverBingHtml(query, Math.max(limit, 10)), 4800, []),
+      boundedValue(discoverDuckDuckGoHtml(query, Math.max(limit, 10)), 4800, [])
+    ]);
+
+    const seen = new Set();
+    return [...bingRows, ...ddgRows].filter((row) => {
+      const key = canonicalResultKey(row.url);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return looksLikeOfficialTechnicalRow(row, analysis);
+    });
+  };
+
+  let candidates = await collect(targetedQuery);
+  if (!candidates.length && broadQuery !== targetedQuery) {
+    candidates = await collect(broadQuery);
+  }
+
   const verified = await verifyTechnicalWebRows(candidates, analysis, limit);
 
   return verified.map((row) => ({
@@ -1042,17 +1115,12 @@ async function runVariant(query, analysis, limit) {
 
   if (
     analysis.intent.startsWith("technical") &&
-    !analysis.brand &&
+    analysis.intent !== "technical_comparison" &&
     (analysis.precisionAnchors || []).length >= 2
   ) {
-    const [githubFound, bingRaw, officialFound] = await Promise.all([
-      boundedValue(discoverGitHubTechnical(analysis, limit), 5200, []),
-      boundedValue(discoverBingHtml(query, limit), 5200, []),
-      boundedValue(discoverOfficialTechnicalRows(analysis, limit), 7000, [])
-    ]);
-    const bingFound = await boundedValue(
-      verifyTechnicalWebRows(bingRaw, analysis, limit),
-      3600,
+    const officialFound = await boundedValue(
+      discoverOfficialTechnicalRows(analysis, Math.max(limit, 10)),
+      9800,
       []
     );
 
@@ -1060,46 +1128,64 @@ async function runVariant(query, analysis, limit) {
       rows.push(...officialFound);
       attempts.push({
         provider: "official-technical-verified",
-        query: officialEntityTerms(analysis).join("|"),
+        query: officialTechnicalHosts(analysis)[0] || officialEntityTerms(analysis).join("|"),
         ok: true
       });
+
+      const officialFocused = fuse(rows, analysis, limit);
+      if (officialFocused.length && officialFocused[0].relevance >= 8) {
+        return { rows, attempts };
+      }
     } else {
       attempts.push({
         provider: "official-technical-verified",
-        query: officialEntityTerms(analysis).join("|"),
+        query: officialTechnicalHosts(analysis)[0] || officialEntityTerms(analysis).join("|"),
         ok: false
       });
     }
 
-    if (githubFound.length) {
-      rows.push(...githubFound);
-      attempts.push({
-        provider: "github-repositories",
-        query: (analysis.precisionAnchors || []).slice(0, 3).join(" "),
-        ok: true
-      });
-    } else {
-      attempts.push({
-        provider: "github-repositories",
-        query: (analysis.precisionAnchors || []).slice(0, 3).join(" "),
-        ok: false
-      });
-    }
+    const allowGitHubTechnical =
+      (analysis.anchors || []).includes("github") ||
+      (analysis.phrases || []).includes("web crawler") ||
+      (analysis.phrases || []).includes("open source");
+
+    const [bingRaw, githubFound] = await Promise.all([
+      boundedValue(discoverBingHtml(query, limit), 5200, []),
+      allowGitHubTechnical
+        ? boundedValue(discoverGitHubTechnical(analysis, limit), 5200, [])
+        : Promise.resolve([])
+    ]);
+
+    const bingFound = await boundedValue(
+      verifyTechnicalWebRows(bingRaw, analysis, limit),
+      3600,
+      []
+    );
 
     if (bingFound.length) {
       rows.push(...bingFound);
-      attempts.push({ provider: "bing-html", query, ok: true });
+      attempts.push({ provider: "bing-html-verified", query, ok: true });
     } else {
-      attempts.push({ provider: "bing-html", query, ok: false });
+      attempts.push({ provider: "bing-html-verified", query, ok: false });
     }
 
-    const focused = fuse(rows, analysis, limit);
-    if (focused.length && focused[0].relevance >= 8) {
-      return { rows, attempts };
+    if (allowGitHubTechnical) {
+      if (githubFound.length) {
+        rows.push(...githubFound);
+        attempts.push({
+          provider: "github-repositories",
+          query: (analysis.precisionAnchors || []).slice(0, 3).join(" "),
+          ok: true
+        });
+      } else {
+        attempts.push({
+          provider: "github-repositories",
+          query: (analysis.precisionAnchors || []).slice(0, 3).join(" "),
+          ok: false
+        });
+      }
     }
 
-    // Strict technical variants are already bounded and evidence-verified above.
-    // Return now so later rewritten variants get their own discovery budget.
     return { rows, attempts };
   }
 
