@@ -387,7 +387,7 @@ server.listen(port, "0.0.0.0", async () => {
 
   try {
     const vectorSmoke = await withTimeout(
-      searchIndex("MongoDB vector search", {
+      searchIndex("How does MongoDB vector quantization reduce storage and memory?", {
         limit: 3,
         candidateLimit: 50,
         perDocument: 1
