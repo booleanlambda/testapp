@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 33;
+const DISCOVERY_CACHE_VERSION = 34;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -583,6 +583,65 @@ async function discoverGitHubTechnical(analysis, limit) {
   );
 }
 
+function officialEntityTerms(analysis) {
+  const primary = String((analysis.anchors || [])[0] || "").toLowerCase();
+  const aliases = new Map([
+    ["postgres", ["postgres", "postgresql"]],
+    ["postgresql", ["postgresql", "postgres"]],
+    ["nodejs", ["nodejs", "node.js"]],
+    ["k8s", ["k8s", "kubernetes"]]
+  ]);
+  return [...new Set(aliases.get(primary) || (primary ? [primary] : []))];
+}
+
+function looksLikeOfficialTechnicalRow(row, analysis) {
+  const terms = officialEntityTerms(analysis);
+  if (!terms.length) return false;
+
+  const hay = `${row.title || ""} ${row.url || ""} ${row.snippet || ""}`.toLowerCase();
+  let host = "";
+  try {
+    host = new URL(row.url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {}
+
+  const hostFlat = host.replace(/[^a-z0-9]/g, "");
+  const entityMatched = terms.some((term) => {
+    const flat = term.replace(/[^a-z0-9]/g, "");
+    return hay.includes(term) || (flat.length >= 5 && hostFlat.includes(flat));
+  });
+  if (!entityMatched) return false;
+
+  return (
+    /\/docs?\//.test(row.url || "") ||
+    /documentation|docs|manual|reference|configuration/.test(hay) ||
+    terms.some((term) => hostFlat === term.replace(/[^a-z0-9]/g, "") + "org")
+  );
+}
+
+async function discoverOfficialTechnicalRows(analysis, limit) {
+  const terms = officialEntityTerms(analysis);
+  if (!terms.length) return [];
+
+  const entity = terms.length > 1 ? terms[1] : terms[0];
+  const distinctive = (analysis.precisionAnchors || [])
+    .filter((x) => !terms.includes(String(x).toLowerCase()))
+    .slice(0, 4)
+    .join(" ");
+
+  const query = `${entity} official documentation ${distinctive}`
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const raw = await discoverBingHtml(query, Math.max(limit, 10));
+  const candidates = raw.filter((row) => looksLikeOfficialTechnicalRow(row, analysis));
+  const verified = await verifyTechnicalWebRows(candidates, analysis, limit);
+
+  return verified.map((row) => ({
+    ...row,
+    provider: "official-technical-verified"
+  }));
+}
+
 async function verifyTechnicalWebRows(rows, analysis, limit) {
   if (!analysis.strictPrecision || !(analysis.precisionAnchors || []).length) {
     return rows;
@@ -975,15 +1034,31 @@ async function runVariant(query, analysis, limit) {
     !analysis.brand &&
     (analysis.precisionAnchors || []).length >= 2
   ) {
-    const [githubFound, bingRaw] = await Promise.all([
+    const [githubFound, bingRaw, officialFound] = await Promise.all([
       boundedValue(discoverGitHubTechnical(analysis, limit), 5200, []),
-      boundedValue(discoverBingHtml(query, limit), 5200, [])
+      boundedValue(discoverBingHtml(query, limit), 5200, []),
+      boundedValue(discoverOfficialTechnicalRows(analysis, limit), 7000, [])
     ]);
     const bingFound = await boundedValue(
       verifyTechnicalWebRows(bingRaw, analysis, limit),
       3600,
       []
     );
+
+    if (officialFound.length) {
+      rows.push(...officialFound);
+      attempts.push({
+        provider: "official-technical-verified",
+        query: officialEntityTerms(analysis).join("|"),
+        ok: true
+      });
+    } else {
+      attempts.push({
+        provider: "official-technical-verified",
+        query: officialEntityTerms(analysis).join("|"),
+        ok: false
+      });
+    }
 
     if (githubFound.length) {
       rows.push(...githubFound);
@@ -1180,7 +1255,7 @@ export async function discoverWeb(query, options = {}) {
       (
         analysis.intent === "technical_comparison" ||
         early.length >= Math.min(limit, 3) ||
-        ["official-search-verified", "bing-html-verified"].includes(early[0]?.provider)
+        ["official-search-verified", "official-technical-verified", "bing-html-verified"].includes(early[0]?.provider)
       );
 
     if (strongStrict || (early.length >= limit && early[0]?.relevance >= 4 && variant !== q)) break;
