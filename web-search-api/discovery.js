@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 11;
+const DISCOVERY_CACHE_VERSION = 12;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -225,17 +225,20 @@ function githubCategorySignal(item) {
 }
 
 function githubTechnicalCategorySignal(item, analysis) {
-  const hay = [
-    item?.full_name,
-    item?.name,
-    item?.description,
-    ...(Array.isArray(item?.topics) ? item.topics : [])
-  ].filter(Boolean).join(" ").toLowerCase();
+  const name = `${item?.full_name || ""} ${item?.name || ""}`.toLowerCase();
+  const description = String(item?.description || "").toLowerCase();
+  const topics = (Array.isArray(item?.topics) ? item.topics : []).join(" ").toLowerCase();
 
   if ((analysis.phrases || []).includes("web crawler")) {
-    return /crawl|scrap|browser|web[- ]data|data[- ]extract|html[- ]to[- ]markdown/.test(hay);
+    const nameSignal = /crawl|scrap|browser/.test(name);
+    const descriptionSignal =
+      /\bweb crawler\b|\bcrawler\b|\bscraper\b|\bweb scraping\b|\bdata extraction\b|\bhtml[- ]to[- ]markdown\b/.test(description);
+    const topicSignal =
+      /\bweb-crawler\b|\bcrawler\b|\bweb-scraping\b|\bscraper\b|\bdata-extraction\b/.test(topics);
+    return nameSignal || descriptionSignal || topicSignal;
   }
 
+  const hay = `${name} ${description} ${topics}`;
   return /developer|sdk|api|database|vector|embedding|search|retrieval|crawler|scraper/.test(hay);
 }
 
@@ -732,6 +735,13 @@ async function runVariant(query, analysis, limit) {
       attempts.push({ provider: "bing-html", query, ok: false, error: error?.message });
     }
 
+    if (analysis.intent.startsWith("technical")) {
+      const focused = fuse(rows, analysis, limit);
+      if (focused.length && focused[0].relevance >= 12) {
+        return { rows, attempts };
+      }
+    }
+
     if (
       (analysis.intent === "technical" || analysis.intent === "technical_tutorial") &&
       ((analysis.phrases || []).includes("web crawler") || (analysis.anchors || []).includes("github"))
@@ -741,7 +751,7 @@ async function runVariant(query, analysis, limit) {
         rows.push(...found);
         attempts.push({ provider: "github-repositories", query: "technical-evidence", ok: found.length > 0 });
         const focused = fuse(rows, analysis, limit);
-        if (focused.length >= Math.min(3, limit)) {
+        if (focused.length && focused[0].relevance >= 12) {
           return { rows, attempts };
         }
       } catch (error) {
@@ -794,7 +804,12 @@ export async function discoverWeb(query, options = {}) {
     collected.push(...result.rows);
 
     const early = fuse(collected, analysis, limit);
-    if (early.length >= limit && early[0]?.relevance >= 4 && variant !== q) break;
+    const strongStrict =
+      analysis.strictPrecision &&
+      early.length > 0 &&
+      early[0]?.relevance >= 12;
+
+    if (strongStrict || (early.length >= limit && early[0]?.relevance >= 4 && variant !== q)) break;
   }
 
   let results = fuse(collected, analysis, limit);
