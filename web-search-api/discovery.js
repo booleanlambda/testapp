@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 28;
+const DISCOVERY_CACHE_VERSION = 29;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -548,9 +548,17 @@ async function discoverGitHubTechnical(analysis, limit) {
   const verified = await Promise.all(
     rows.slice(0, Math.min(Math.max(limit, 10), 12)).map(async (row) => {
       const metadata = `${row.title || ""} ${row.snippet || ""} ${row.url || ""}`.toLowerCase();
-      const evidenceHits = new Set(
-        anchors.filter((anchor) => metadata.includes(anchor.toLowerCase()))
-      );
+      const metadataHits = anchors.filter((anchor) => metadata.includes(anchor.toLowerCase()));
+      const evidenceHits = new Set(metadataHits);
+      const primaryEntity = String((analysis.anchors || [])[0] || "").toLowerCase();
+
+      if (
+        analysis.strictPrecision &&
+        primaryEntity &&
+        !metadata.includes(primaryEntity)
+      ) {
+        return null;
+      }
 
       if (evidenceHits.size < required && row.repoFullName) {
         const readme = await fetchGitHubRepositoryEvidence(row);
@@ -573,6 +581,50 @@ async function discoverGitHubTechnical(analysis, limit) {
     verified.filter(Boolean).slice(0, Math.max(limit, 10)),
     "github-repositories"
   );
+}
+
+async function verifyTechnicalWebRows(rows, analysis, limit) {
+  if (!analysis.strictPrecision || !(analysis.precisionAnchors || []).length) {
+    return rows;
+  }
+
+  const anchors = analysis.precisionAnchors || [];
+  const required = Math.min(2, anchors.length);
+  const candidates = rows.slice(0, Math.min(Math.max(limit, 6), 10));
+
+  const checked = await Promise.all(candidates.map(async (row) => {
+    const summary = `${row.title || ""} ${row.snippet || ""} ${row.url || ""}`.toLowerCase();
+    const hits = new Set(
+      anchors.filter((anchor) => summary.includes(anchor.toLowerCase()))
+    );
+
+    let text = summary;
+    if (hits.size < required) {
+      try {
+        const html = await fetchText(row.url, 2600);
+        const $ = cheerio.load(html);
+        text = [
+          $("title").first().text(),
+          $('meta[name="description"]').attr("content") || "",
+          $("main").text() || $("article").text() || $("body").text() || ""
+        ].join(" ").replace(/\s+/g, " ").toLowerCase();
+
+        for (const anchor of anchors) {
+          if (text.includes(anchor.toLowerCase())) hits.add(anchor);
+        }
+      } catch {}
+    }
+
+    if (hits.size < required) return null;
+
+    return {
+      ...row,
+      provider: row.provider === "bing-html" ? "bing-html-verified" : row.provider,
+      queryEvidence: [...hits]
+    };
+  }));
+
+  return checked.filter(Boolean);
 }
 
 async function verifyOfficialSearchRows(rows, analysis, limit) {
@@ -923,10 +975,15 @@ async function runVariant(query, analysis, limit) {
     !analysis.brand &&
     (analysis.precisionAnchors || []).length >= 2
   ) {
-    const [githubFound, bingFound] = await Promise.all([
+    const [githubFound, bingRaw] = await Promise.all([
       boundedValue(discoverGitHubTechnical(analysis, limit), 5200, []),
       boundedValue(discoverBingHtml(query, limit), 5200, [])
     ]);
+    const bingFound = await boundedValue(
+      verifyTechnicalWebRows(bingRaw, analysis, limit),
+      3600,
+      []
+    );
 
     if (githubFound.length) {
       rows.push(...githubFound);
@@ -994,8 +1051,15 @@ async function runVariant(query, analysis, limit) {
     } else {
       try {
         const found = await discoverBingHtml(query, limit);
-        rows.push(...found);
-        attempts.push({ provider: "bing-html", query, ok: found.length > 0 });
+        const usable = analysis.intent.startsWith("technical")
+          ? await verifyTechnicalWebRows(found, analysis, limit)
+          : found;
+        rows.push(...usable);
+        attempts.push({
+          provider: analysis.intent.startsWith("technical") ? "bing-html-verified" : "bing-html",
+          query,
+          ok: usable.length > 0
+        });
       } catch (error) {
         attempts.push({ provider: "bing-html", query, ok: false, error: error?.message });
       }
