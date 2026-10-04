@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 22;
+const DISCOVERY_CACHE_VERSION = 23;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -848,28 +848,37 @@ async function runVariant(query, analysis, limit) {
   const rows = [];
 
   if (analysis.intent === "technical_comparison") {
-    try {
-      const found = await discoverBingHtml(query, limit);
-      rows.push(...found);
-      attempts.push({ provider: "bing-html", query, ok: found.length > 0 });
-      const focused = fuse(rows, analysis, limit);
-      if (focused.length >= Math.min(3, limit)) {
-        return { rows, attempts };
-      }
-    } catch (error) {
-      attempts.push({ provider: "bing-html", query, ok: false, error: error?.message });
+    const [bingResult, githubResult] = await Promise.allSettled([
+      discoverBingHtml(query, limit),
+      discoverGitHubRepositories(analysis, limit)
+    ]);
+
+    if (bingResult.status === "fulfilled") {
+      rows.push(...bingResult.value);
+      attempts.push({ provider: "bing-html", query, ok: bingResult.value.length > 0 });
+    } else {
+      attempts.push({ provider: "bing-html", query, ok: false, error: bingResult.reason?.message });
     }
 
-    try {
-      const found = await discoverGitHubRepositories(analysis, limit);
-      rows.push(...found);
-      attempts.push({ provider: "github-repositories", query: analysis.comparisonTarget || query, ok: found.length > 0 });
-      const focused = fuse(rows, analysis, limit);
-      if (focused.length >= Math.min(3, limit)) {
-        return { rows, attempts };
-      }
-    } catch (error) {
-      attempts.push({ provider: "github-repositories", query: analysis.comparisonTarget || query, ok: false, error: error?.message });
+    if (githubResult.status === "fulfilled") {
+      rows.push(...githubResult.value);
+      attempts.push({
+        provider: "github-repositories",
+        query: analysis.comparisonTarget || query,
+        ok: githubResult.value.length > 0
+      });
+    } else {
+      attempts.push({
+        provider: "github-repositories",
+        query: analysis.comparisonTarget || query,
+        ok: false,
+        error: githubResult.reason?.message
+      });
+    }
+
+    const focused = fuse(rows, analysis, limit);
+    if (focused.length >= Math.min(3, limit)) {
+      return { rows, attempts };
     }
 
     try {
@@ -989,7 +998,7 @@ export async function discoverWeb(query, options = {}) {
   const limit = Math.max(1, Math.min(Number(options.limit || 8), 20));
   const cacheTtl = Math.max(30, Math.min(Number(options.cacheTtl || 600), 3600));
   const analysis = analyzeQuery(q);
-  const maxMs = Math.max(5000, Math.min(Number(options.maxMs || 22000), 30000));
+  const maxMs = Math.max(5000, Math.min(Number(options.maxMs || 26000), 30000));
   const deadline = Date.now() + maxMs;
 
   const cacheKey = sha256(JSON.stringify({
@@ -1019,7 +1028,7 @@ export async function discoverWeb(query, options = {}) {
     const startedAt = Date.now();
     const result = await boundedValue(
       runVariant(variant, analysis, Math.max(limit, 10)),
-      Math.min(7000, remaining),
+      Math.min(12000, remaining),
       {
         rows: [],
         attempts: [{ provider: "variant-timeout", query: variant, ok: false, error: "timeout" }]
