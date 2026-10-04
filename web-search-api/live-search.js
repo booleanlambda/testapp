@@ -96,7 +96,7 @@ export async function liveSearch(query, options = {}) {
         limit,
         urls: candidateUrls,
         candidateLimit: 2000,
-        perDocument: 1
+        perDocument: discovery.strictPrecision ? 4 : 2
       });
     } catch {}
   }
