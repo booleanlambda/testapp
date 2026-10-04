@@ -81,6 +81,27 @@ async function testEmbeddingEndpoint() {
   }
 }
 
+async function runDiagnostics() {
+  const environment = envState();
+  const [mongo, amqpStatus, embedding] = await Promise.all([
+    testMongo(),
+    testAmqp(),
+    testEmbeddingEndpoint()
+  ]);
+
+  return {
+    environment,
+    mongo,
+    amqp: amqpStatus,
+    embedding,
+    ok:
+      Object.values(environment).every(Boolean) &&
+      mongo.ok &&
+      amqpStatus.ok &&
+      embedding.ok
+  };
+}
+
 const sendJson = (res, status, body) => {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
@@ -100,20 +121,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.url === "/diagnostics") {
-    const [mongo, amqpStatus, embedding] = await Promise.all([
-      testMongo(),
-      testAmqp(),
-      testEmbeddingEndpoint()
-    ]);
-
-    const ok = mongo.ok && amqpStatus.ok && embedding.ok;
-
-    sendJson(res, ok ? 200 : 503, {
+    const diagnostics = await runDiagnostics();
+    sendJson(res, diagnostics.ok ? 200 : 503, {
       service: "web-search-api",
-      ok,
-      mongo,
-      amqp: amqpStatus,
-      embedding
+      ...diagnostics
     });
     return;
   }
@@ -121,6 +132,9 @@ const server = http.createServer(async (req, res) => {
   sendJson(res, 404, { error: "not_found" });
 });
 
-server.listen(port, "0.0.0.0", () => {
+server.listen(port, "0.0.0.0", async () => {
   console.log(`web-search-api listening on ${port}`);
+
+  const diagnostics = await runDiagnostics();
+  console.log("startup diagnostics", JSON.stringify(diagnostics));
 });
