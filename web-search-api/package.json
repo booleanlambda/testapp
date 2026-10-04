@@ -6,6 +6,10 @@
   "scripts": {
     "start": "node server.js"
   },
+  "dependencies": {
+    "amqplib": "^0.10.7",
+    "mongodb": "^6.19.0"
+  },
   "engines": {
     "node": ">=20"
   }
