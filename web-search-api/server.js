@@ -416,7 +416,7 @@ server.listen(port, "0.0.0.0", async () => {
       const startedAt = Date.now();
       try {
         const result = await withTimeout(
-          discoverWeb(test.query, { limit: 5, cacheTtl: 30 }),
+          discoverWeb(test.query, { limit: 5, cacheTtl: 30, maxMs: 22000, debug: true }),
           30000
         );
         const passed = Boolean(test.validate(result));
