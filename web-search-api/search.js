@@ -1,21 +1,5 @@
 import { embedQuery } from "./embedding.js";
-import { recentChunks } from "./storage.js";
-
-function cosine(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) return -1;
-  let dot = 0;
-  let aa = 0;
-  let bb = 0;
-  for (let i = 0; i < a.length; i++) {
-    const x = Number(a[i]) || 0;
-    const y = Number(b[i]) || 0;
-    dot += x * y;
-    aa += x * x;
-    bb += y * y;
-  }
-  if (!aa || !bb) return -1;
-  return dot / (Math.sqrt(aa) * Math.sqrt(bb));
-}
+import { vectorSearchChunks } from "./storage.js";
 
 function terms(text = "") {
   return [...new Set(
@@ -40,22 +24,32 @@ export async function searchIndex(query, options = {}) {
   if (!q) throw new Error("query_required");
 
   const limit = Math.max(1, Math.min(Number(options.limit || 5), 20));
-  const candidateLimit = Math.max(100, Math.min(Number(options.candidateLimit || 1500), 5000));
+  const candidateLimit = Math.max(
+    limit,
+    Math.min(Number(options.candidateLimit || Math.max(limit * 20, 100)), 500)
+  );
   const perDocument = Math.max(1, Math.min(Number(options.perDocument || 2), 5));
-
   const urls = Array.isArray(options.urls) ? options.urls.filter(Boolean) : null;
-  const [{ vector, model }, candidates] = await Promise.all([
-    embedQuery(q),
-    recentChunks(candidateLimit, urls)
-  ]);
+
+  const { vector, model } = await embedQuery(q);
+  if (!Array.isArray(vector) || !vector.length) {
+    throw new Error("query_embedding_missing");
+  }
+
+  const candidates = await vectorSearchChunks(vector, {
+    limit: candidateLimit,
+    numCandidates: Math.min(Math.max(candidateLimit * 20, 100), 10000),
+    urls,
+    embeddingModel: model
+  });
 
   const qTerms = terms(q);
   const scored = candidates
     .map((row) => {
-      const semantic = cosine(vector, row.embedding);
+      const vectorScore = Number(row.vectorScore) || 0;
+      const semantic = vectorScore * 2 - 1;
       const lexical = lexicalScore(qTerms, row);
-      const normalizedSemantic = semantic < -0.99 ? 0 : (semantic + 1) / 2;
-      const score = normalizedSemantic * 0.85 + lexical * 0.15;
+      const score = vectorScore * 0.85 + lexical * 0.15;
       return {
         ...row,
         score,
@@ -90,6 +84,8 @@ export async function searchIndex(query, options = {}) {
   return {
     query: q,
     embeddingModel: model,
+    retrieval: "atlas-vector",
+    vectorIndex: process.env.VECTOR_INDEX_NAME?.trim() || "chunks_embedding_v2",
     candidateCount: candidates.length,
     results
   };
