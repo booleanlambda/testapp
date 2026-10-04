@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 26;
+const DISCOVERY_CACHE_VERSION = 27;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -149,7 +149,7 @@ async function discoverSearx(query, limit, category = "general") {
 
   const response = await fetch(url, {
     headers: { "user-agent": DISCOVERY_UA, accept: "application/json" },
-    signal: AbortSignal.timeout(12000)
+    signal: AbortSignal.timeout(3500)
   });
   if (!response.ok) throw new Error(`searx_${response.status}`);
 
@@ -470,10 +470,13 @@ async function discoverGitHubTechnical(analysis, limit) {
   }
 
   const broadEvidence = anchors.slice(0, 3);
-  specs.push({
-    q: `${broadEvidence.join(" ")} in:name,description,readme`,
-    evidence: broadEvidence
-  });
+  const broadQuery = `${broadEvidence.join(" ")} in:name,description,readme`;
+  if (!specs.some((spec) => spec.q === broadQuery)) {
+    specs.push({
+      q: broadQuery,
+      evidence: broadEvidence
+    });
+  }
 
   const rows = [];
   const seen = new Set();
@@ -498,7 +501,7 @@ async function discoverGitHubTechnical(analysis, limit) {
     try {
       response = await fetch(url, {
         headers,
-        signal: AbortSignal.timeout(10000)
+        signal: AbortSignal.timeout(4500)
       });
     } catch {
       continue;
@@ -881,6 +884,44 @@ async function runVariant(query, analysis, limit) {
     }
 
     return { rows, attempts };
+  }
+
+  if (
+    analysis.intent.startsWith("technical") &&
+    !analysis.brand &&
+    (analysis.precisionAnchors || []).length >= 2
+  ) {
+    const [githubFound, bingFound] = await Promise.all([
+      boundedValue(discoverGitHubTechnical(analysis, limit), 5200, []),
+      boundedValue(discoverBingHtml(query, limit), 5200, [])
+    ]);
+
+    if (githubFound.length) {
+      rows.push(...githubFound);
+      attempts.push({
+        provider: "github-repositories",
+        query: (analysis.precisionAnchors || []).slice(0, 3).join(" "),
+        ok: true
+      });
+    } else {
+      attempts.push({
+        provider: "github-repositories",
+        query: (analysis.precisionAnchors || []).slice(0, 3).join(" "),
+        ok: false
+      });
+    }
+
+    if (bingFound.length) {
+      rows.push(...bingFound);
+      attempts.push({ provider: "bing-html", query, ok: true });
+    } else {
+      attempts.push({ provider: "bing-html", query, ok: false });
+    }
+
+    const focused = fuse(rows, analysis, limit);
+    if (focused.length && focused[0].relevance >= 8) {
+      return { rows, attempts };
+    }
   }
 
   if (process.env.SEARCH_DISCOVERY_BASE_URL) {
