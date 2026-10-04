@@ -159,13 +159,17 @@ export function analyzeQuery(query) {
       .replace(/\s+/g, " ")
       .trim();
     const target = comparisonTarget || precisionAnchors[0] || brand;
-    const phrasePart = phrases.filter((p) => p !== "agent").slice(0, 2).map((p) => `"${p}"`).join(" ");
 
-    variants[0] = cleaned;
-    if (target) {
-      variants.push(`"${target}" alternatives ${phrasePart} agents open source`.replace(/\s+/g, " ").trim());
-      variants.push(`"${target}" competitors alternative web search API agent developer`.replace(/\s+/g, " ").trim());
+    if (target && comparisonMode === "alternatives") {
+      variants[0] = `intitle:alternatives "${target}" "open source"`;
+      variants.push(`intitle:alternative "${target}" "web search"`);
+      variants.push(`inurl:alternatives "${target}" "search api"`);
+    } else if (target) {
+      variants[0] = cleaned;
+      variants.push(`"${target}" comparison "web search api" agents`);
+      variants.push(`"${target}" versus competitor search API`);
     } else {
+      variants[0] = cleaned;
       variants.push(`${cleaned} alternatives comparison open source`);
     }
   } else if (intent === "commercial") {
