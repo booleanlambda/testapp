@@ -78,7 +78,7 @@ export function analyzeQuery(query) {
 
   const news = explicitNews || temporalFinance || temporalEvent;
   const tutorial = /\b(tutorial|guide|how to|example|examples|docs|documentation|learn|setup|install|implementation)\b/i.test(q);
-  const technical = /\b(api|sdk|code|developer|programming|crawler|scraper|vector|embedding|database|agent|agents|rag|llm|github|npm|python|javascript|mongodb|mongot|playwright|pgvector|postgres|postgresql|hnsw|ivfflat|ef_construction)\b/i.test(q);
+  const technical = /\b(api|sdk|code|developer|programming|crawler|scraper|vector|embedding|database|agent|agents|rag|llm|github|npm|python|javascript|mongodb|mongot|playwright|pgvector|postgres|postgresql|hnsw|ivfflat|ef_construction|kubernetes|k8s|managedfields|managed-fields|server-side|serverside)\b/i.test(q) || /server[- ]side\s+apply/i.test(q);
   const comparison = /\b(alternative|alternatives|compare|comparison|versus|\bvs\.?\b|replacement|competitor|competitors)\b/i.test(q);
   const commercial = /\b(price|pricing|cost|buy|product|vendor|provider)\b/i.test(q);
 
@@ -108,7 +108,7 @@ export function analyzeQuery(query) {
     !/^20\d{2}$/.test(t)
   ));
 
-  const systemTerms = /^(postgres|postgresql|mongodb|mongot|pgvector|hnsw|ivfflat|checkpoint|checkpoints|wal|wal_compression|full-page|hint|bits|replication|vacuum|btree|lsn|mvcc|redo|undo)$/;
+  const systemTerms = /^(postgres|postgresql|mongodb|mongot|pgvector|hnsw|ivfflat|checkpoint|checkpoints|wal|wal_compression|full-page|hint|bits|replication|vacuum|btree|lsn|mvcc|redo|undo|kubernetes|k8s|server-side|managedfields|managed-fields|conflict|conflicts|force)$/;
 
   const precisionAnchors = precisionCandidates
     .map((token, index) => {
@@ -131,6 +131,9 @@ export function analyzeQuery(query) {
   else if (/search\s+api/.test(lower)) phrases.push("search api");
   if (/open\s+source/.test(lower)) phrases.push("open source");
   if (/vector\s+search/.test(lower)) phrases.push("vector search");
+  if (/server[- ]side\s+apply/.test(lower)) phrases.push("server-side apply");
+  if (/managed\s*fields|managedfields/.test(lower)) phrases.push("managedfields");
+  if (/force(?:d)?\s+conflicts?|force.*conflict/.test(lower)) phrases.push("force conflicts");
   if (/full[- ]page/.test(lower)) phrases.push("full page");
   if (/hint\s+bits?/.test(lower)) phrases.push("hint bits");
   if (/wal_compression|wal\s+compression/.test(lower)) phrases.push("wal_compression");
