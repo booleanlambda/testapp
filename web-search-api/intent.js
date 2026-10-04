@@ -46,7 +46,13 @@ function currentOrRecentYear(q) {
 function inferBrand(q, content) {
   const raws = rawWords(q);
   for (const token of raws) {
-    if (/[a-z][A-Z]|[A-Z].*[A-Z]/.test(token) && token.length >= 5) {
+    // Hyphenated title-case technical phrases (for example "Server-Side")
+    // are descriptors, not brands. Avoid generating bogus site:<phrase>.com rewrites.
+    if (
+      !token.includes("-") &&
+      /[a-z][A-Z]|[A-Z].*[A-Z]/.test(token) &&
+      token.length >= 5
+    ) {
       return token.toLowerCase();
     }
   }
