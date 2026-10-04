@@ -315,6 +315,13 @@ export function passesPrecision(row, analysis) {
   }
 
   if (
+    row.provider === "official-search-verified" &&
+    evidenceHits.size >= required
+  ) {
+    return true;
+  }
+
+  if (
     row.provider === "github-repositories" &&
     row.technicalCandidate &&
     evidenceHits.size >= required
