@@ -197,7 +197,7 @@ export function analyzeQuery(query) {
         .slice(0, 2)
         .map((p) => `"${p}"`)
         .join(" ");
-      variants[0] = `site:${brand}.com/docs ${brandedPrecise} ${quoted} documentation`.replace(/\s+/g, " ").trim();
+      variants[0] = `site:${brand}.com/docs ${brandedPrecise} ${phraseTerms} documentation`.replace(/\s+/g, " ").trim();
       variants.push(q);
       variants.push(focused);
     } else {
