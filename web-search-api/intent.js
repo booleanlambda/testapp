@@ -359,7 +359,11 @@ export function passesPrecision(row, analysis) {
   }
 
   if (
-    row.provider === "official-search-verified" &&
+    [
+      "official-search-verified",
+      "official-technical-verified",
+      "bing-html-verified"
+    ].includes(row.provider) &&
     evidenceHits.size >= required
   ) {
     return true;
