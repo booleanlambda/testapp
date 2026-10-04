@@ -385,49 +385,7 @@ server.listen(port, "0.0.0.0", async () => {
   const diagnostics = await runDiagnostics();
   console.log("startup diagnostics", JSON.stringify(diagnostics));
 
-  try {
-    const extractionSmoke = await withTimeout(
-      crawlSite("https://www.mongodb.com/docs/vector-search/about/vector-quantization/", {
-        maxPages: 1,
-        depth: 0,
-        sameOrigin: true,
-        respectRobots: true
-      }),
-      45000
-    );
-    console.log("CRAWL_EXTRACTION_SMOKE", JSON.stringify({
-      indexedPages: extractionSmoke.indexedPages,
-      page: extractionSmoke.pages?.[0] || null,
-      failures: extractionSmoke.failures
-    }));
 
-    const vectorSmoke = await withTimeout(
-      searchIndex("How does MongoDB vector quantization reduce storage and memory?", {
-        limit: 3,
-        candidateLimit: 50,
-        perDocument: 1
-      }),
-      30000
-    );
-    console.log("ATLAS_VECTOR_SMOKE_PASS", JSON.stringify({
-      retrieval: vectorSmoke.retrieval,
-      vectorIndex: vectorSmoke.vectorIndex,
-      embeddingModel: vectorSmoke.embeddingModel,
-      candidateCount: vectorSmoke.candidateCount,
-      resultCount: vectorSmoke.results?.length || 0,
-      topResults: (vectorSmoke.results || []).slice(0, 3).map((row) => ({
-        title: row.title,
-        url: row.url,
-        score: row.score,
-        semanticScore: row.semanticScore,
-        excerpt: String(row.content || "").slice(0, 320)
-      }))
-    }));
-  } catch (error) {
-    console.error("ATLAS_VECTOR_SMOKE_FAIL", JSON.stringify({
-      error: error?.message || String(error)
-    }));
-  }
 
   (async () => {
     const tests = [
