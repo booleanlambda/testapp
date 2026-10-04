@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 24;
+const DISCOVERY_CACHE_VERSION = 25;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -263,15 +263,25 @@ function githubTechnicalCategorySignal(item, analysis) {
 }
 
 async function fetchGitHubRepositoryEvidence(row) {
+  const repoFullName = row.repoFullName;
+  if (!repoFullName) return "";
+
+  const headers = {
+    "user-agent": DISCOVERY_UA,
+    accept: "application/vnd.github.raw+json",
+    "x-github-api-version": "2022-11-28"
+  };
+  if (process.env.GITHUB_DISCOVERY_TOKEN) {
+    headers.authorization = `Bearer ${process.env.GITHUB_DISCOVERY_TOKEN}`;
+  }
+
   try {
-    const html = await fetchText(row.url, 3500);
-    const $ = cheerio.load(html);
-    return (
-      $("#readme").text() ||
-      $("article.markdown-body").text() ||
-      $("body").text() ||
-      ""
-    ).replace(/\s+/g, " ").trim();
+    const response = await fetch(`https://api.github.com/repos/${repoFullName}/readme`, {
+      headers,
+      signal: AbortSignal.timeout(3000)
+    });
+    if (!response.ok) return "";
+    return await response.text();
   } catch {
     return "";
   }
@@ -296,19 +306,25 @@ function comparisonCategoryEvidence(text, categoryPhrase) {
 
 async function verifyGitHubComparisonRows(rows, analysis, categoryPhrase, limit) {
   const wantsOpenSource = (analysis.phrases || []).includes("open source");
-  const candidates = rows.slice(0, Math.min(Math.max(limit, 6), 10));
+  const candidates = rows.slice(0, Math.min(Math.max(limit, 6), 8));
 
   const checked = await Promise.all(candidates.map(async (row) => {
-    const evidence = await fetchGitHubRepositoryEvidence(row);
-    if (!evidence) return null;
+    const metadata = `${row.title || ""} ${row.snippet || ""}`;
+    let categoryMatched = comparisonCategoryEvidence(metadata, categoryPhrase);
+    let evidence = metadata;
 
-    const combined = `${row.title || ""} ${row.snippet || ""} ${evidence}`;
-    const categoryMatched = comparisonCategoryEvidence(combined, categoryPhrase);
+    if (!categoryMatched) {
+      const readme = await fetchGitHubRepositoryEvidence(row);
+      if (!readme) return null;
+      evidence = `${metadata} ${readme}`;
+      categoryMatched = comparisonCategoryEvidence(evidence, categoryPhrase);
+    }
+
     if (!categoryMatched) return null;
     if (wantsOpenSource && !row.openSourceVerified) return null;
 
     const target = analysis.comparisonTarget?.toLowerCase();
-    const targetMentioned = target && combined.toLowerCase().includes(target);
+    const targetMentioned = target && evidence.toLowerCase().includes(target);
 
     return {
       ...row,
@@ -320,7 +336,6 @@ async function verifyGitHubComparisonRows(rows, analysis, categoryPhrase, limit)
 
   return checked.filter(Boolean);
 }
-
 async function discoverGitHubRepositories(analysis, limit) {
   const target = analysis.comparisonTarget || analysis.brand;
   if (!target) return [];
@@ -889,33 +904,20 @@ async function runVariant(query, analysis, limit) {
     }
   } else {
     if (analysis.strictPrecision && analysis.brand && analysis.intent.startsWith("technical")) {
-      const [bingResult, ddgResult] = await Promise.allSettled([
-        discoverBingHtml(query, limit),
-        discoverDuckDuckGoLite(query, limit)
-      ]);
+      try {
+        const found = await discoverBingHtml(query, limit);
+        attempts.push({ provider: "bing-html", query, ok: found.length > 0 });
 
-      const found = [];
-      if (bingResult.status === "fulfilled") {
-        found.push(...bingResult.value);
-        attempts.push({ provider: "bing-html", query, ok: bingResult.value.length > 0 });
-      } else {
-        attempts.push({ provider: "bing-html", query, ok: false, error: bingResult.reason?.message });
+        const usable = await verifyOfficialSearchRows(found, analysis, limit);
+        rows.push(...usable);
+        attempts.push({
+          provider: "official-search-verified",
+          query,
+          ok: usable.length > 0
+        });
+      } catch (error) {
+        attempts.push({ provider: "bing-html", query, ok: false, error: error?.message });
       }
-
-      if (ddgResult.status === "fulfilled") {
-        found.push(...ddgResult.value);
-        attempts.push({ provider: "duckduckgo-lite", query, ok: ddgResult.value.length > 0 });
-      } else {
-        attempts.push({ provider: "duckduckgo-lite", query, ok: false, error: ddgResult.reason?.message });
-      }
-
-      const usable = await verifyOfficialSearchRows(found, analysis, limit);
-      rows.push(...usable);
-      attempts.push({
-        provider: "official-search-verified",
-        query,
-        ok: usable.length > 0
-      });
     } else {
       try {
         const found = await discoverBingHtml(query, limit);
