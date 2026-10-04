@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 8;
+const DISCOVERY_CACHE_VERSION = 9;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -45,7 +45,11 @@ function normalizeRows(rows, provider) {
     snippet: row.snippet || null,
     publishedAt: row.publishedAt || null,
     provider,
-    rank: index + 1
+    rank: index + 1,
+    precisionMatched: Boolean(row.precisionMatched),
+    comparisonCandidate: Boolean(row.comparisonCandidate),
+    categoryMatched: Boolean(row.categoryMatched),
+    openSourceVerified: Boolean(row.openSourceVerified)
   })).filter((row) => row.url);
 }
 
@@ -204,15 +208,39 @@ async function discoverGitHubRepositories(analysis, limit) {
   const target = analysis.comparisonTarget || analysis.brand;
   if (!target) return [];
 
+  const wantsOpenSource = (analysis.phrases || []).includes("open source");
+  const categoryPhrase =
+    (analysis.phrases || []).find((p) =>
+      ["web search api", "search api", "web crawler", "vector search"].includes(p)
+    ) || "web search api";
+
   const queries = [
-    `${target} alternative in:name,description,readme`,
-    `${target} replacement in:name,description,readme`
+    {
+      q: `${target} alternative in:name,description,readme`,
+      precisionMatched: true,
+      comparisonCandidate: true,
+      categoryMatched: false
+    },
+    {
+      q: `${target} replacement in:name,description,readme`,
+      precisionMatched: true,
+      comparisonCandidate: true,
+      categoryMatched: false
+    },
+    {
+      q: `${categoryPhrase.replace(/"/g, "")} in:name,description,readme stars:>10`,
+      precisionMatched: false,
+      comparisonCandidate: true,
+      categoryMatched: true
+    }
   ];
 
   const rows = [];
-  for (const query of queries) {
+  const seen = new Set();
+
+  for (const spec of queries) {
     const url = new URL("https://api.github.com/search/repositories");
-    url.searchParams.set("q", query);
+    url.searchParams.set("q", spec.q);
     url.searchParams.set("sort", "stars");
     url.searchParams.set("order", "desc");
     url.searchParams.set("per_page", String(Math.min(10, Math.max(limit, 6))));
@@ -240,18 +268,33 @@ async function discoverGitHubRepositories(analysis, limit) {
 
     const json = await response.json();
     for (const item of json?.items || []) {
+      if (!item?.html_url || seen.has(item.html_url)) continue;
+
+      const license = item.license?.spdx_id && item.license.spdx_id !== "NOASSERTION"
+        ? item.license.spdx_id
+        : null;
+      if (wantsOpenSource && !license) continue;
+
+      seen.add(item.html_url);
+      const topics = Array.isArray(item.topics) ? item.topics.slice(0, 8) : [];
       rows.push({
         title: item.full_name || item.name,
         url: item.html_url,
         snippet: [
           item.description,
+          topics.length ? `Topics: ${topics.join(", ")}` : null,
+          license ? `License: ${license}` : null,
           item.stargazers_count != null ? `GitHub stars: ${item.stargazers_count}` : null
         ].filter(Boolean).join(" — "),
-        publishedAt: item.updated_at || null
+        publishedAt: item.updated_at || null,
+        precisionMatched: spec.precisionMatched,
+        comparisonCandidate: spec.comparisonCandidate,
+        categoryMatched: spec.categoryMatched,
+        openSourceVerified: Boolean(license)
       });
     }
 
-    if (rows.length >= limit) break;
+    if (rows.length >= Math.max(limit, 10)) break;
   }
 
   return normalizeRows(rows.slice(0, Math.max(limit, 10)), "github-repositories");
