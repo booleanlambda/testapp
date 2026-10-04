@@ -210,7 +210,7 @@ export function relevanceScore(row, analysis) {
 
   let score = 0;
   let anchorHits = 0;
-  let precisionHits = 0;
+  const precisionHitSet = new Set();
 
   for (const anchor of analysis.anchors) {
     const hit = countOccurrences(hay, anchor.toLowerCase());
@@ -222,8 +222,16 @@ export function relevanceScore(row, analysis) {
 
   for (const anchor of analysis.precisionAnchors || []) {
     if (hay.includes(anchor.toLowerCase())) {
-      precisionHits++;
+      precisionHitSet.add(anchor.toLowerCase());
       score += 4;
+    }
+  }
+
+  for (const anchor of row.queryEvidence || []) {
+    const lowerAnchor = String(anchor).toLowerCase();
+    if ((analysis.precisionAnchors || []).includes(lowerAnchor)) {
+      if (!precisionHitSet.has(lowerAnchor)) score += 2.5;
+      precisionHitSet.add(lowerAnchor);
     }
   }
 
@@ -250,12 +258,20 @@ export function relevanceScore(row, analysis) {
       if (row.categoryMatched) score += 10;
       if (row.openSourceVerified) score += 4;
     }
+  } else if (
+    analysis.intent.startsWith("technical") &&
+    row.provider === "github-repositories" &&
+    row.technicalCandidate
+  ) {
+    score += 8;
+    if (row.openSourceVerified) score += 3;
   }
 
   const needed = Math.min(2, analysis.anchors.length);
   if (needed > 0 && anchorHits === 0) score -= 8;
   else if (needed > 1 && anchorHits < needed) score -= 2;
 
+  const precisionHits = precisionHitSet.size;
   if ((analysis.precisionAnchors || []).length) {
     if (precisionHits === 0) score -= 12;
     else if (analysis.strictPrecision && precisionHits < Math.min(2, analysis.precisionAnchors.length)) score -= 6;
@@ -279,10 +295,30 @@ export function passesPrecision(row, analysis) {
   const hits = analysis.precisionAnchors.filter((a) => hay.includes(a.toLowerCase())).length;
   const required = Math.min(2, analysis.precisionAnchors.length);
 
-  if (row.provider === "official-sitemap" && analysis.brand) {
+  const evidenceHits = new Set(
+    (row.queryEvidence || [])
+      .map((x) => String(x).toLowerCase())
+      .filter((x) => (analysis.precisionAnchors || []).includes(x))
+  );
+  for (const anchor of analysis.precisionAnchors || []) {
+    if (hay.includes(anchor.toLowerCase())) evidenceHits.add(anchor.toLowerCase());
+  }
+
+  if (
+    row.provider === "github-repositories" &&
+    row.technicalCandidate &&
+    evidenceHits.size >= required
+  ) {
+    const wantsOpenSource = (analysis.phrases || []).includes("open source");
+    if (wantsOpenSource && !row.openSourceVerified) return false;
+    return true;
+  }
+
+  if (row.provider === "bing-html" && analysis.brand && evidenceHits.size >= required) {
     try {
       const host = new URL(row.url).hostname.toLowerCase();
-      if (host.includes(analysis.brand)) return true;
+      const brand = analysis.brand.toLowerCase();
+      if (host === `${brand}.com` || host.endsWith(`.${brand}.com`)) return true;
     } catch {}
   }
 
