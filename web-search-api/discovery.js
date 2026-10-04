@@ -3,13 +3,29 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 20;
+const DISCOVERY_CACHE_VERSION = 21;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
   const wait = Math.max(0, nextAllowedAt - Date.now());
   if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
   nextAllowedAt = Date.now() + ms;
+}
+
+async function boundedValue(promise, ms, fallback = null) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms);
+      })
+    ]);
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function normalizeResultUrl(raw) {
@@ -983,7 +999,7 @@ export async function discoverWeb(query, options = {}) {
     provider: process.env.SEARCH_DISCOVERY_BASE_URL ? "searxng+bing+ddg" : "bing+ddg"
   }));
 
-  const cached = await getDiscoveryCache(cacheKey).catch(() => null);
+  const cached = await boundedValue(getDiscoveryCache(cacheKey), 1500, null);
   if (cached) {
     return { ...cached, cached: true };
   }
@@ -1039,6 +1055,6 @@ export async function discoverWeb(query, options = {}) {
     discoveredAt: new Date().toISOString()
   };
 
-  await setDiscoveryCache(cacheKey, value, cacheTtl).catch(() => {});
+  void setDiscoveryCache(cacheKey, value, cacheTtl).catch(() => {});
   return value;
 }
