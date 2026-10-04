@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 13;
+const DISCOVERY_CACHE_VERSION = 14;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -447,6 +447,64 @@ async function discoverGitHubTechnical(analysis, limit) {
   return normalizeRows(rows.slice(0, Math.max(limit, 10)), "github-repositories");
 }
 
+async function verifyOfficialSearchRows(rows, analysis, limit) {
+  if (!analysis.brand || !analysis.strictPrecision) return rows;
+
+  const brand = analysis.brand.toLowerCase();
+  const required = Math.min(2, (analysis.precisionAnchors || []).length);
+  if (!required) return rows;
+
+  const candidates = rows.filter((row) => {
+    try {
+      const host = new URL(row.url).hostname.toLowerCase();
+      return host === `${brand}.com` || host.endsWith(`.${brand}.com`);
+    } catch {
+      return false;
+    }
+  }).slice(0, Math.min(Math.max(limit, 5), 8));
+
+  const checked = await Promise.all(candidates.map(async (row) => {
+    try {
+      const html = await fetchText(row.url, 6000);
+      const $ = cheerio.load(html);
+      const title =
+        $("title").first().text().replace(/\s+/g, " ").trim() ||
+        row.title ||
+        null;
+      const meta =
+        $('meta[name="description"]').attr("content") ||
+        $('meta[property="og:description"]').attr("content") ||
+        "";
+      const body = $("main").text() || $("article").text() || $("body").text() || "";
+      const text = `${title || ""} ${meta} ${body}`.replace(/\s+/g, " ").trim();
+      const lower = text.toLowerCase();
+      const hits = (analysis.precisionAnchors || []).filter((a) =>
+        lower.includes(a.toLowerCase())
+      );
+      if (hits.length < required) return null;
+
+      let focusAt = -1;
+      for (const anchor of hits) {
+        const i = lower.indexOf(anchor.toLowerCase());
+        if (i >= 0 && (focusAt < 0 || i < focusAt)) focusAt = i;
+      }
+      const start = focusAt >= 0 ? Math.max(0, focusAt - 220) : 0;
+
+      return {
+        ...row,
+        title,
+        snippet: text.slice(start, start + 1100).trim(),
+        provider: "official-search-verified",
+        queryEvidence: hits
+      };
+    } catch {
+      return null;
+    }
+  }));
+
+  return checked.filter(Boolean);
+}
+
 async function discoverDuckDuckGoHtml(query, limit) {
   await throttle();
   const url = new URL("https://html.duckduckgo.com/html/");
@@ -593,7 +651,7 @@ async function discoverOfficialSitemap(analysis, limit) {
   const seen = new Set();
   const pages = [];
 
-  while (queue.length && seen.size < 24 && pages.length < 120) {
+  while (queue.length && seen.size < 12 && pages.length < 80) {
     queue.sort((a, b) => b.score - a.score);
     const item = queue.shift();
     if (!item || seen.has(item.url)) continue;
@@ -616,8 +674,8 @@ async function discoverOfficialSitemap(analysis, limit) {
         }))
         .sort((a, b) => b.score - a.score);
 
-      const unlockers = ranked.filter((x) => /\/docs\/.*sitemap-index|\/docs\/sitemap-index/i.test(x.url)).slice(0, 2);
-      const focused = ranked.slice(0, 8);
+      const unlockers = ranked.filter((x) => /\/docs\/.*sitemap-index|\/docs\/sitemap-index/i.test(x.url)).slice(0, 1);
+      const focused = ranked.slice(0, 5);
       for (const child of [...unlockers, ...focused]) {
         if (!seen.has(child.url)) queue.push(child);
       }
@@ -634,7 +692,7 @@ async function discoverOfficialSitemap(analysis, limit) {
 
   const candidates = pages
     .sort((a, b) => b.score - a.score)
-    .slice(0, Math.max(limit, 12));
+    .slice(0, Math.max(limit, 7));
 
   const enriched = await Promise.all(candidates.map(async (row, index) => {
     try {
@@ -745,8 +803,16 @@ async function runVariant(query, analysis, limit) {
   } else {
     try {
       const found = await discoverBingHtml(query, limit);
-      rows.push(...found);
-      attempts.push({ provider: "bing-html", query, ok: found.length > 0 });
+      const usable =
+        analysis.strictPrecision && analysis.brand
+          ? await verifyOfficialSearchRows(found, analysis, limit)
+          : found;
+      rows.push(...usable);
+      attempts.push({
+        provider: analysis.strictPrecision && analysis.brand ? "official-search-verified" : "bing-html",
+        query,
+        ok: usable.length > 0
+      });
     } catch (error) {
       attempts.push({ provider: "bing-html", query, ok: false, error: error?.message });
     }
@@ -776,7 +842,10 @@ async function runVariant(query, analysis, limit) {
     }
   }
 
-  if (!rows.length || analysis.intent.startsWith("technical")) {
+  if (
+    (!rows.length || analysis.intent.startsWith("technical")) &&
+    !(analysis.strictPrecision && analysis.brand)
+  ) {
     try {
       const found = await discoverDuckDuckGo(query, limit);
       rows.push(...found);
