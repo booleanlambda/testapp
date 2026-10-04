@@ -385,6 +385,34 @@ server.listen(port, "0.0.0.0", async () => {
   const diagnostics = await runDiagnostics();
   console.log("startup diagnostics", JSON.stringify(diagnostics));
 
+  try {
+    const vectorSmoke = await withTimeout(
+      searchIndex("MongoDB vector search", {
+        limit: 3,
+        candidateLimit: 50,
+        perDocument: 1
+      }),
+      30000
+    );
+    console.log("ATLAS_VECTOR_SMOKE_PASS", JSON.stringify({
+      retrieval: vectorSmoke.retrieval,
+      vectorIndex: vectorSmoke.vectorIndex,
+      embeddingModel: vectorSmoke.embeddingModel,
+      candidateCount: vectorSmoke.candidateCount,
+      resultCount: vectorSmoke.results?.length || 0,
+      topResults: (vectorSmoke.results || []).slice(0, 3).map((row) => ({
+        title: row.title,
+        url: row.url,
+        score: row.score,
+        semanticScore: row.semanticScore
+      }))
+    }));
+  } catch (error) {
+    console.error("ATLAS_VECTOR_SMOKE_FAIL", JSON.stringify({
+      error: error?.message || String(error)
+    }));
+  }
+
   (async () => {
     const tests = [
       {
