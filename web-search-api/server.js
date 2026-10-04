@@ -4,6 +4,8 @@ import { MongoClient } from "mongodb";
 import amqp from "amqplib";
 import { crawlSite, validatePublicUrl } from "./crawler.js";
 import { searchIndex } from "./search.js";
+import { liveSearch } from "./live-search.js";
+import { discoverWeb } from "./discovery.js";
 import {
   createJob,
   ensureIndexes,
@@ -210,13 +212,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && path === "/") {
       sendJson(res, 200, {
         service: "web-search-api",
-        version: "0.2.0",
+        version: "0.3.0",
         endpoints: {
           health: "GET /health",
           diagnostics: "GET /diagnostics",
           crawl: "POST /crawl",
           crawlStatus: "GET /crawl/:jobId",
-          search: "POST /search or GET /search?q=..."
+          search: "POST /search or GET /search?q=...",
+          discover: "GET /discover?q=..."
         },
         limits: {
           crawlMaxPages: 10,
@@ -304,17 +307,44 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && path === "/discover") {
+      const query = requestUrl.searchParams.get("q");
+      const limit = requestUrl.searchParams.get("limit") || 8;
+      if (!query) {
+        sendJson(res, 400, { error: "query_required" });
+        return;
+      }
+      const result = await discoverWeb(query, { limit });
+      sendJson(res, 200, result);
+      return;
+    }
+
     if ((req.method === "POST" || req.method === "GET") && path === "/search") {
       const body = req.method === "POST" ? await readJson(req) : {};
       const query = body.query || body.q || requestUrl.searchParams.get("q");
       const limit = body.limit || requestUrl.searchParams.get("limit") || 5;
+      const mode =
+        body.mode ||
+        requestUrl.searchParams.get("mode") ||
+        (body.live === false ? "index" : "live");
 
       if (!query) {
         sendJson(res, 400, { error: "query_required" });
         return;
       }
 
-      const result = await searchIndex(query, { limit });
+      if (mode === "index") {
+        const result = await searchIndex(query, { limit });
+        sendJson(res, 200, { ...result, mode: "index" });
+        return;
+      }
+
+      const result = await liveSearch(query, {
+        limit,
+        maxDiscover: body.maxDiscover || requestUrl.searchParams.get("maxDiscover") || 8,
+        maxCrawl: body.maxCrawl || requestUrl.searchParams.get("maxCrawl") || 5,
+        freshSeconds: body.freshSeconds || requestUrl.searchParams.get("freshSeconds") || 1800
+      });
       sendJson(res, 200, result);
       return;
     }
@@ -336,7 +366,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, "0.0.0.0", async () => {
-  console.log(`web-search-api v0.2.0 listening on ${port}`);
+  console.log(`web-search-api v0.3.0 listening on ${port}`);
 
   try {
     await ensureIndexes();
