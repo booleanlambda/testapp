@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 3;
+const DISCOVERY_CACHE_VERSION = 4;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -187,7 +187,7 @@ async function discoverBingHtml(query, limit) {
   return normalizeRows(rows.slice(0, Math.max(limit, 20)), "bing-html");
 }
 
-async function discoverDuckDuckGo(query, limit) {
+async function discoverDuckDuckGoHtml(query, limit) {
   await throttle();
   const url = new URL("https://html.duckduckgo.com/html/");
   url.searchParams.set("q", query);
@@ -199,7 +199,7 @@ async function discoverDuckDuckGo(query, limit) {
     },
     signal: AbortSignal.timeout(12000)
   });
-  if (!response.ok) throw new Error(`ddg_${response.status}`);
+  if (!response.ok) throw new Error(`ddg_html_${response.status}`);
 
   const html = await response.text();
   const $ = cheerio.load(html);
@@ -214,6 +214,171 @@ async function discoverDuckDuckGo(query, limit) {
   });
 
   return normalizeRows(rows.slice(0, limit), "duckduckgo-html");
+}
+
+async function discoverDuckDuckGoLite(query, limit) {
+  await throttle();
+  const url = new URL("https://lite.duckduckgo.com/lite/");
+  url.searchParams.set("q", query);
+
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": DISCOVERY_UA,
+      accept: "text/html,application/xhtml+xml"
+    },
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!response.ok) throw new Error(`ddg_lite_${response.status}`);
+
+  const html = await response.text();
+  const $ = cheerio.load(html);
+  const links = $("a.result-link").toArray();
+  const snippets = $("td.result-snippet").toArray();
+  const rows = links.map((link, index) => ({
+    title: $(link).text().trim(),
+    url: $(link).attr("href"),
+    snippet: snippets[index] ? $(snippets[index]).text().replace(/\s+/g, " ").trim() : null
+  }));
+
+  return normalizeRows(rows.slice(0, limit), "duckduckgo-lite");
+}
+
+async function discoverDuckDuckGo(query, limit) {
+  try {
+    const html = await discoverDuckDuckGoHtml(query, limit);
+    if (html.length) return html;
+  } catch {}
+
+  return discoverDuckDuckGoLite(query, limit);
+}
+
+function scoreOfficialUrl(url, analysis, parentScore = 0) {
+  const lower = String(url).toLowerCase();
+  let score = parentScore;
+
+  for (const anchor of analysis.precisionAnchors || []) {
+    if (lower.includes(anchor.toLowerCase())) score += 5;
+  }
+
+  for (const phrase of analysis.phrases || []) {
+    for (const token of phrase.toLowerCase().split(/\s+/)) {
+      if (token.length >= 4 && lower.includes(token)) score += 2;
+    }
+  }
+
+  if (/\/docs\//.test(lower)) score += 3;
+  if (/search|vector|api|sdk|reference|guide|tutorial|install|deployment|self-managed/.test(lower)) score += 2;
+  if (/sitemap-index|sitemap-full/.test(lower)) score += 4;
+  if (/\/(pt-br|es|ko-kr|ja-jp|it-it|de-de|fr-fr|zh-cn|zh-tw|th-th)\//.test(lower)) score -= 10;
+
+  return score;
+}
+
+function xmlLocs(xml) {
+  const $ = cheerio.load(xml, { xmlMode: true });
+  const sitemapLocs = $("sitemap > loc").map((_, el) => $(el).text().trim()).get();
+  if (sitemapLocs.length) return { type: "index", locs: sitemapLocs };
+
+  const pageLocs = $("url > loc").map((_, el) => $(el).text().trim()).get();
+  return { type: "urlset", locs: pageLocs };
+}
+
+async function fetchText(url, ms = 12000) {
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": DISCOVERY_UA,
+      accept: "application/xml,text/xml,text/plain,text/html;q=0.5"
+    },
+    signal: AbortSignal.timeout(ms)
+  });
+  if (!response.ok) throw new Error(`official_fetch_${response.status}`);
+  return response.text();
+}
+
+async function discoverOfficialSitemap(analysis, limit) {
+  if (!analysis.brand) return [];
+
+  const hosts = [
+    `https://www.${analysis.brand}.com`,
+    `https://${analysis.brand}.com`
+  ];
+
+  let root = null;
+  let robots = "";
+
+  for (const host of hosts) {
+    try {
+      robots = await fetchText(`${host}/robots.txt`, 8000);
+      root = host;
+      break;
+    } catch {}
+  }
+
+  if (!root) return [];
+
+  let sitemapUrls = [...robots.matchAll(/^\s*Sitemap:\s*(\S+)/gim)].map((m) => m[1]);
+  if (!sitemapUrls.length) {
+    sitemapUrls = [`${root}/sitemap.xml`, `${root}/sitemap-index.xml`];
+  }
+
+  const queue = sitemapUrls.map((url) => ({
+    url,
+    depth: 0,
+    score: scoreOfficialUrl(url, analysis)
+  }));
+  const seen = new Set();
+  const pages = [];
+
+  while (queue.length && seen.size < 24 && pages.length < 120) {
+    queue.sort((a, b) => b.score - a.score);
+    const item = queue.shift();
+    if (!item || seen.has(item.url)) continue;
+    seen.add(item.url);
+
+    let xml;
+    try {
+      xml = await fetchText(item.url, 10000);
+    } catch {
+      continue;
+    }
+
+    const parsed = xmlLocs(xml);
+    if (parsed.type === "index" && item.depth < 2) {
+      const ranked = parsed.locs
+        .map((url) => ({
+          url,
+          depth: item.depth + 1,
+          score: scoreOfficialUrl(url, analysis, item.score * 0.25)
+        }))
+        .sort((a, b) => b.score - a.score);
+
+      const unlockers = ranked.filter((x) => /\/docs\/.*sitemap-index|\/docs\/sitemap-index/i.test(x.url)).slice(0, 2);
+      const focused = ranked.slice(0, 8);
+      for (const child of [...unlockers, ...focused]) {
+        if (!seen.has(child.url)) queue.push(child);
+      }
+      continue;
+    }
+
+    if (parsed.type === "urlset") {
+      for (const url of parsed.locs) {
+        const score = scoreOfficialUrl(url, analysis, item.score * 0.15);
+        if (score > 2) pages.push({ url, score });
+      }
+    }
+  }
+
+  return pages
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(limit, 12))
+    .map((row, index) => ({
+      title: null,
+      url: row.url,
+      snippet: `Official ${analysis.brand} documentation candidate`,
+      publishedAt: null,
+      provider: "official-sitemap",
+      rank: index + 1
+    }));
 }
 
 async function runVariant(query, analysis, limit) {
@@ -296,7 +461,25 @@ export async function discoverWeb(query, options = {}) {
     if (early.length >= limit && early[0]?.relevance >= 4 && variant !== q) break;
   }
 
-  const results = fuse(collected, analysis, limit);
+  let results = fuse(collected, analysis, limit);
+
+  if (
+    results.length < Math.min(limit, 3) &&
+    analysis.strictPrecision &&
+    analysis.brand &&
+    (analysis.intent === "technical_tutorial" || analysis.intent === "technical")
+  ) {
+    try {
+      const official = await discoverOfficialSitemap(analysis, Math.max(limit, 10));
+      attempts.push({ provider: "official-sitemap", query: analysis.brand, ok: official.length > 0 });
+      if (official.length) {
+        collected.push(...official);
+        results = fuse(collected, analysis, limit);
+      }
+    } catch (error) {
+      attempts.push({ provider: "official-sitemap", query: analysis.brand, ok: false, error: error?.message });
+    }
+  }
 
   const value = {
     query: q,
