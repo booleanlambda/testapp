@@ -41,6 +41,7 @@ export async function searchIndex(query, options = {}) {
 
   const limit = Math.max(1, Math.min(Number(options.limit || 5), 20));
   const candidateLimit = Math.max(100, Math.min(Number(options.candidateLimit || 1500), 5000));
+  const perDocument = Math.max(1, Math.min(Number(options.perDocument || 2), 5));
 
   const urls = Array.isArray(options.urls) ? options.urls.filter(Boolean) : null;
   const [{ vector, model }, candidates] = await Promise.all([
@@ -69,7 +70,7 @@ export async function searchIndex(query, options = {}) {
 
   for (const row of scored) {
     const used = perDocument.get(row.documentId) || 0;
-    if (used >= 2) continue;
+    if (used >= perDocument) continue;
     perDocument.set(row.documentId, used + 1);
 
     results.push({
