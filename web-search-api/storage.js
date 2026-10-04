@@ -33,7 +33,9 @@ export async function ensureIndexes() {
     db.collection("chunks").createIndex({ documentId: 1, ordinal: 1 }),
     db.collection("chunks").createIndex({ crawledAt: -1 }),
     db.collection("crawl_jobs").createIndex({ jobId: 1 }, { unique: true }),
-    db.collection("crawl_jobs").createIndex({ createdAt: -1 })
+    db.collection("crawl_jobs").createIndex({ createdAt: -1 }),
+    db.collection("discovery_cache").createIndex({ key: 1 }, { unique: true }),
+    db.collection("discovery_cache").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
   ]);
 }
 
@@ -130,4 +132,53 @@ export async function recentChunks(limit = 1500) {
     .sort({ crawledAt: -1 })
     .limit(limit)
     .toArray();
+}
+
+
+export async function getDocument(url) {
+  const db = await getDb();
+  return db.collection("documents").findOne(
+    { url },
+    {
+      projection: {
+        _id: 0,
+        documentId: 1,
+        url: 1,
+        title: 1,
+        description: 1,
+        crawledAt: 1,
+        wordCount: 1,
+        contentHash: 1
+      }
+    }
+  );
+}
+
+export async function getDiscoveryCache(key) {
+  const db = await getDb();
+  const row = await db.collection("discovery_cache").findOne(
+    { key, expiresAt: { $gt: new Date() } },
+    { projection: { _id: 0 } }
+  );
+  return row?.value || null;
+}
+
+export async function setDiscoveryCache(key, value, ttlSeconds = 600) {
+  const db = await getDb();
+  const now = new Date();
+  const expiresAt = new Date(Date.now() + Math.max(30, ttlSeconds) * 1000);
+
+  await db.collection("discovery_cache").updateOne(
+    { key },
+    {
+      $set: {
+        key,
+        value,
+        updatedAt: now,
+        expiresAt
+      },
+      $setOnInsert: { createdAt: now }
+    },
+    { upsert: true }
+  );
 }
