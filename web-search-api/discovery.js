@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 32;
+const DISCOVERY_CACHE_VERSION = 33;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -1176,7 +1176,12 @@ export async function discoverWeb(query, options = {}) {
     const strongStrict =
       analysis.strictPrecision &&
       early.length > 0 &&
-      early[0]?.relevance >= 12;
+      early[0]?.relevance >= 12 &&
+      (
+        analysis.intent === "technical_comparison" ||
+        early.length >= Math.min(limit, 3) ||
+        ["official-search-verified", "bing-html-verified"].includes(early[0]?.provider)
+      );
 
     if (strongStrict || (early.length >= limit && early[0]?.relevance >= 4 && variant !== q)) break;
   }
