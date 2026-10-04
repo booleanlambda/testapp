@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 18;
+const DISCOVERY_CACHE_VERSION = 19;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -311,31 +311,7 @@ async function verifyGitHubComparisonRows(rows, analysis, categoryPhrase, limit)
   const wantsOpenSource = (analysis.phrases || []).includes("open source");
   const candidates = rows.slice(0, Math.min(Math.max(limit, 6), 10));
 
-  const ready = [];
-  const needsFetch = [];
-
-  for (const row of candidates) {
-    const summary = `${row.title || ""} ${row.snippet || ""} ${row.url || ""}`.toLowerCase();
-    const hits = (analysis.precisionAnchors || []).filter((a) =>
-      summary.includes(a.toLowerCase())
-    );
-
-    if (hits.length >= required) {
-      ready.push({
-        ...row,
-        provider: "official-search-verified",
-        queryEvidence: hits
-      });
-    } else {
-      needsFetch.push(row);
-    }
-  }
-
-  if (ready.length >= Math.min(limit, 3)) {
-    return ready;
-  }
-
-  const checked = await Promise.all(needsFetch.slice(0, 4).map(async (row) => {
+  const checked = await Promise.all(candidates.map(async (row) => {
     const evidence = await fetchGitHubRepositoryEvidence(row);
     if (!evidence) return null;
 
@@ -582,7 +558,29 @@ async function verifyOfficialSearchRows(rows, analysis, limit) {
     }
   }).slice(0, Math.min(Math.max(limit, 5), 8));
 
-  const checked = await Promise.all(candidates.map(async (row) => {
+  const ready = [];
+  const needsFetch = [];
+
+  for (const row of candidates) {
+    const summary = `${row.title || ""} ${row.snippet || ""} ${row.url || ""}`.toLowerCase();
+    const hits = (analysis.precisionAnchors || []).filter((a) =>
+      summary.includes(a.toLowerCase())
+    );
+
+    if (hits.length >= required) {
+      ready.push({
+        ...row,
+        provider: "official-search-verified",
+        queryEvidence: hits
+      });
+    } else {
+      needsFetch.push(row);
+    }
+  }
+
+  if (ready.length >= Math.min(limit, 3)) return ready;
+
+  const checked = await Promise.all(needsFetch.slice(0, 4).map(async (row) => {
     try {
       const html = await fetchText(row.url, 2500);
       const $ = cheerio.load(html);
@@ -607,12 +605,12 @@ async function verifyOfficialSearchRows(rows, analysis, limit) {
         const i = lower.indexOf(anchor.toLowerCase());
         if (i >= 0 && (focusAt < 0 || i < focusAt)) focusAt = i;
       }
-      const start = focusAt >= 0 ? Math.max(0, focusAt - 220) : 0;
+      const focusStart = focusAt >= 0 ? Math.max(0, focusAt - 220) : 0;
 
       return {
         ...row,
         title,
-        snippet: text.slice(start, start + 1100).trim(),
+        snippet: text.slice(focusStart, focusStart + 1100).trim(),
         provider: "official-search-verified",
         queryEvidence: hits
       };
