@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 35;
+const DISCOVERY_CACHE_VERSION = 36;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -632,8 +632,19 @@ async function discoverOfficialTechnicalRows(analysis, limit) {
     .replace(/\s+/g, " ")
     .trim();
 
-  const raw = await discoverBingHtml(query, Math.max(limit, 10));
-  const candidates = raw.filter((row) => looksLikeOfficialTechnicalRow(row, analysis));
+  const [bingRows, ddgRows] = await Promise.all([
+    boundedValue(discoverBingHtml(query, Math.max(limit, 10)), 4800, []),
+    boundedValue(discoverDuckDuckGoHtml(query, Math.max(limit, 10)), 4800, [])
+  ]);
+
+  const raw = [...bingRows, ...ddgRows];
+  const seen = new Set();
+  const candidates = raw.filter((row) => {
+    const key = canonicalResultKey(row.url);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return looksLikeOfficialTechnicalRow(row, analysis);
+  });
   const verified = await verifyTechnicalWebRows(candidates, analysis, limit);
 
   return verified.map((row) => ({
