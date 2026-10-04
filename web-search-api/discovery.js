@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 16;
+const DISCOVERY_CACHE_VERSION = 17;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -191,7 +191,7 @@ async function discoverBingHtml(query, limit) {
       "user-agent": DISCOVERY_UA,
       accept: "text/html,application/xhtml+xml"
     },
-    signal: AbortSignal.timeout(12000)
+    signal: AbortSignal.timeout(6500)
   });
   if (!response.ok) throw new Error(`bing_html_${response.status}`);
 
@@ -560,7 +560,7 @@ async function verifyOfficialSearchRows(rows, analysis, limit) {
 
   const checked = await Promise.all(candidates.map(async (row) => {
     try {
-      const html = await fetchText(row.url, 6000);
+      const html = await fetchText(row.url, 3500);
       const $ = cheerio.load(html);
       const title =
         $("title").first().text().replace(/\s+/g, " ").trim() ||
@@ -639,7 +639,7 @@ async function discoverDuckDuckGoLite(query, limit) {
       "user-agent": DISCOVERY_UA,
       accept: "text/html,application/xhtml+xml"
     },
-    signal: AbortSignal.timeout(12000)
+    signal: AbortSignal.timeout(6500)
   });
   if (!response.ok) throw new Error(`ddg_lite_${response.status}`);
 
@@ -898,20 +898,42 @@ async function runVariant(query, analysis, limit) {
       attempts.push({ provider: "bing-news-rss", query, ok: false, error: error?.message });
     }
   } else {
-    try {
-      const found = await discoverBingHtml(query, limit);
-      const usable =
-        analysis.strictPrecision && analysis.brand
-          ? await verifyOfficialSearchRows(found, analysis, limit)
-          : found;
+    if (analysis.strictPrecision && analysis.brand && analysis.intent.startsWith("technical")) {
+      const [bingResult, ddgResult] = await Promise.allSettled([
+        discoverBingHtml(query, limit),
+        discoverDuckDuckGoLite(query, limit)
+      ]);
+
+      const found = [];
+      if (bingResult.status === "fulfilled") {
+        found.push(...bingResult.value);
+        attempts.push({ provider: "bing-html", query, ok: bingResult.value.length > 0 });
+      } else {
+        attempts.push({ provider: "bing-html", query, ok: false, error: bingResult.reason?.message });
+      }
+
+      if (ddgResult.status === "fulfilled") {
+        found.push(...ddgResult.value);
+        attempts.push({ provider: "duckduckgo-lite", query, ok: ddgResult.value.length > 0 });
+      } else {
+        attempts.push({ provider: "duckduckgo-lite", query, ok: false, error: ddgResult.reason?.message });
+      }
+
+      const usable = await verifyOfficialSearchRows(found, analysis, limit);
       rows.push(...usable);
       attempts.push({
-        provider: analysis.strictPrecision && analysis.brand ? "official-search-verified" : "bing-html",
+        provider: "official-search-verified",
         query,
         ok: usable.length > 0
       });
-    } catch (error) {
-      attempts.push({ provider: "bing-html", query, ok: false, error: error?.message });
+    } else {
+      try {
+        const found = await discoverBingHtml(query, limit);
+        rows.push(...found);
+        attempts.push({ provider: "bing-html", query, ok: found.length > 0 });
+      } catch (error) {
+        attempts.push({ provider: "bing-html", query, ok: false, error: error?.message });
+      }
     }
 
     if (analysis.intent.startsWith("technical")) {
