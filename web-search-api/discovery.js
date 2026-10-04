@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 39;
+const DISCOVERY_CACHE_VERSION = 40;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -674,6 +674,24 @@ function directOfficialTechnicalUrls(analysis) {
     }
   }
 
+  if (terms.has("kubernetes") || terms.has("k8s")) {
+    const ssaFocused =
+      anchors.has("server-side") ||
+      anchors.has("managedfields") ||
+      anchors.has("managed-fields") ||
+      anchors.has("conflicts") ||
+      (analysis.phrases || []).includes("server-side apply");
+
+    if (ssaFocused) {
+      urls.push(
+        "https://kubernetes.io/docs/reference/using-api/server-side-apply/",
+        "https://kubernetes.io/docs/reference/using-api/api-concepts/"
+      );
+    } else {
+      urls.push("https://kubernetes.io/docs/");
+    }
+  }
+
   return [...new Set(urls)];
 }
 
@@ -707,6 +725,12 @@ async function discoverDirectOfficialRows(analysis, limit) {
     } else if (/mongodb\.com\/docs\/llms\.txt/i.test(url)) {
       title = "MongoDB Developer Documentation Index";
       snippet = "Official MongoDB technical documentation index for database, Search, Vector Search, drivers, and self-managed deployment documentation.";
+    } else if (/kubernetes\.io\/docs\/reference\/using-api\/server-side-apply/i.test(url)) {
+      title = "Kubernetes Server-Side Apply";
+      snippet = "Official Kubernetes documentation for Server-Side Apply, managedFields ownership, field conflicts, and forcing conflicts to take ownership.";
+    } else if (/kubernetes\.io\/docs\/reference\/using-api\/api-concepts/i.test(url)) {
+      title = "Kubernetes API Concepts";
+      snippet = "Official Kubernetes API documentation covering object field management, update semantics, and API behavior.";
     }
 
     const lower = `${title} ${snippet} ${url}`.toLowerCase();
