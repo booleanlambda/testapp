@@ -26,6 +26,19 @@ const withTimeout = async (promise, ms = 5000) => {
   }
 };
 
+const redactMongoMessage = (message = "") =>
+  String(message)
+    .replace(/mongodb(?:\+srv)?:\/\/[^\s"']+/gi, "[redacted-mongodb-uri]")
+    .replace(/([?&](?:password|passwd|pwd)=)[^&\s]+/gi, "$1[redacted]")
+    .slice(0, 500);
+
+const safeMongoError = (error) => ({
+  name: error?.name || "Error",
+  code: error?.code ?? null,
+  codeName: error?.codeName ?? null,
+  message: redactMongoMessage(error?.message || String(error))
+});
+
 async function testMongo() {
   if (!process.env.MONGODB_URI || !process.env.MONGODB_DB) return { ok: false, reason: "not_configured" };
 
@@ -38,8 +51,12 @@ async function testMongo() {
     await client.connect();
     await client.db(process.env.MONGODB_DB).command({ ping: 1 });
     return { ok: true };
-  } catch {
-    return { ok: false, reason: "connection_failed" };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: "connection_failed",
+      error: safeMongoError(error)
+    };
   } finally {
     if (client) await client.close().catch(() => {});
   }
