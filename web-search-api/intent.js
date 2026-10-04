@@ -15,6 +15,8 @@ const GENERIC_PRECISION = new Set([
   "versus","documentation","docs","tutorial","guide","official","community","developer",
   "implementation","latest","recent","news","today","update","updates","decision",
   "tune","tuning","tradeoff","tradeoffs","differ","difference","differences","affect","affects",
+  "write","writes","writing","written","image","images","after","before","change","changes",
+  "trigger","triggers","triggered","them","then","also","using","used","work","works",
   "october","september","august","july","june","may","april","march","february","january",
   "november","december","search","policy","rate","bank"
 ]);
@@ -100,11 +102,27 @@ export function analyzeQuery(query) {
     }
   }
 
-  const precisionAnchors = uniq(anchors.filter((t) =>
+  const precisionCandidates = uniq(anchors.filter((t) =>
     !GENERIC_PRECISION.has(t) &&
     !GENERIC_TECH.has(t) &&
     !/^20\d{2}$/.test(t)
-  )).slice(0, 5);
+  ));
+
+  const systemTerms = /^(postgres|postgresql|mongodb|mongot|pgvector|hnsw|ivfflat|checkpoint|checkpoints|wal|wal_compression|full-page|hint|bits|replication|vacuum|btree|lsn|mvcc|redo|undo)$/;
+
+  const precisionAnchors = precisionCandidates
+    .map((token, index) => {
+      let priority = 0;
+      if (token.includes("_")) priority += 12;
+      if (token.includes("-")) priority += 7;
+      if (systemTerms.test(token)) priority += 9;
+      if (token.length >= 9) priority += 3;
+      else if (token.length >= 6) priority += 1;
+      return { token, index, priority };
+    })
+    .sort((a, b) => b.priority - a.priority || a.index - b.index)
+    .slice(0, 5)
+    .map((x) => x.token);
 
   const phrases = [];
   const lower = q.toLowerCase();
@@ -113,6 +131,10 @@ export function analyzeQuery(query) {
   else if (/search\s+api/.test(lower)) phrases.push("search api");
   if (/open\s+source/.test(lower)) phrases.push("open source");
   if (/vector\s+search/.test(lower)) phrases.push("vector search");
+  if (/full[- ]page/.test(lower)) phrases.push("full page");
+  if (/hint\s+bits?/.test(lower)) phrases.push("hint bits");
+  if (/wal_compression|wal\s+compression/.test(lower)) phrases.push("wal_compression");
+  if (/checkpoints?/.test(lower)) phrases.push("checkpoint");
   if (/ai\s+agent/.test(lower)) phrases.push("ai agent");
   if (/ghana\s+cedi/.test(lower)) phrases.push("ghana cedi");
   if (/bank\s+of\s+ghana/.test(lower)) phrases.push("bank of ghana");
