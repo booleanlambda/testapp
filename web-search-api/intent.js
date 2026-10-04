@@ -48,6 +48,7 @@ export function analyzeQuery(query) {
   const phrases = [];
   const lower = q.toLowerCase();
   if (/web\s+crawler/.test(lower)) phrases.push("web crawler");
+  if (/\bagents?\b/.test(lower) && /\bcrawler|search|retrieval|rag\b/.test(lower)) phrases.push("agent");
   if (/vector\s+search/.test(lower)) phrases.push("vector search");
   if (/search\s+api/.test(lower)) phrases.push("search api");
   if (/ai\s+agent/.test(lower)) phrases.push("ai agent");
@@ -62,7 +63,13 @@ export function analyzeQuery(query) {
       .replace(/\s+/g, " ")
       .trim();
     variants.push(`${base} latest news ${year}`);
-    variants.push(`${base} economy market central bank ${year}`);
+
+    const financeNews = /\b(cedi|currency|fx|forex|economy|economic|inflation|market|markets|rates?|central bank|bank of ghana|gdp|debt|bonds?)\b/i.test(q);
+    variants.push(
+      financeNews
+        ? `${base} economy market central bank ${year}`
+        : `${base} announcements developments ${year}`
+    );
   } else if (intent === "technical" || intent === "technical_tutorial") {
     const quoted = phrases.length
       ? phrases.map((p) => `"${p}"`).join(" ")
