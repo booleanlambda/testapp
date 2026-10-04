@@ -32,11 +32,19 @@ const redactMongoMessage = (message = "") =>
     .replace(/([?&](?:password|passwd|pwd)=)[^&\s]+/gi, "$1[redacted]")
     .slice(0, 500);
 
+const mongoTarget = () => {
+  const uri = process.env.MONGODB_URI || "";
+  const match = uri.match(/^mongodb(?:\+srv)?:\/\/(?:[^@/]+@)?([^/?]+)/i);
+  return match?.[1] || null;
+};
+
 const safeMongoError = (error) => ({
   name: error?.name || "Error",
   code: error?.code ?? null,
   codeName: error?.codeName ?? null,
-  message: redactMongoMessage(error?.message || String(error))
+  causeCode: error?.cause?.code ?? null,
+  message: redactMongoMessage(error?.message || String(error)),
+  target: mongoTarget()
 });
 
 async function testMongo() {
