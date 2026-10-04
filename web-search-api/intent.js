@@ -263,10 +263,20 @@ export function passesPrecision(row, analysis) {
   const hits = analysis.precisionAnchors.filter((a) => hay.includes(a.toLowerCase())).length;
   const required = Math.min(2, analysis.precisionAnchors.length);
 
+  if (row.provider === "official-sitemap" && analysis.brand) {
+    try {
+      const host = new URL(row.url).hostname.toLowerCase();
+      if (host.includes(analysis.brand)) return true;
+    } catch {}
+  }
+
   if (analysis.intent === "technical_comparison" && analysis.comparisonTarget) {
     const mentionsTarget = hay.includes(analysis.comparisonTarget);
-    const isClearlyAlternative = /alternative|alternatives|competitor|competitors|comparison|versus|\bvs\b/.test(hay);
-    return mentionsTarget || isClearlyAlternative;
+    const comparisonSignal = /alternative|alternatives|replacement|competitor|competitors|comparison|versus|\bvs\b/.test(hay);
+    const categorySignal = /web search|search api|open source|self-hosted|agent|rag|crawler/.test(hay);
+
+    if (mentionsTarget) return comparisonSignal;
+    return comparisonSignal && categorySignal;
   }
 
   return hits >= required;
