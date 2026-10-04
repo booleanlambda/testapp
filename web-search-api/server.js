@@ -46,7 +46,8 @@ async function testMongo() {
   try {
     client = new MongoClient(process.env.MONGODB_URI, {
       serverSelectionTimeoutMS: 5000,
-      connectTimeoutMS: 5000
+      connectTimeoutMS: 5000,
+      family: 4
     });
     await client.connect();
     await client.db(process.env.MONGODB_DB).command({ ping: 1 });
