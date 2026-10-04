@@ -161,9 +161,9 @@ export function analyzeQuery(query) {
     const target = comparisonTarget || precisionAnchors[0] || brand;
 
     if (target && comparisonMode === "alternatives") {
-      variants[0] = `intitle:alternatives "${target}" "open source"`;
-      variants.push(`intitle:alternative "${target}" "web search"`);
-      variants.push(`inurl:alternatives "${target}" "search api"`);
+      variants[0] = `site:github.com "${target}" alternative open source`;
+      variants.push(`"${target}" "open source alternative" "web search api"`);
+      variants.push(`"${target}" replacement self-hosted web search`);
     } else if (target) {
       variants[0] = cleaned;
       variants.push(`"${target}" comparison "web search api" agents`);
