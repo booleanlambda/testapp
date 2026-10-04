@@ -314,14 +314,6 @@ export function passesPrecision(row, analysis) {
     return true;
   }
 
-  if (row.provider === "bing-html" && analysis.brand && evidenceHits.size >= required) {
-    try {
-      const host = new URL(row.url).hostname.toLowerCase();
-      const brand = analysis.brand.toLowerCase();
-      if (host === `${brand}.com` || host.endsWith(`.${brand}.com`)) return true;
-    } catch {}
-  }
-
   if (analysis.intent === "technical_comparison" && analysis.comparisonTarget) {
     const mentionsTarget = hay.includes(analysis.comparisonTarget);
     const alternativeSignal = /alternative|alternatives|replacement|competitor|competitors/.test(hay);
@@ -332,8 +324,7 @@ export function passesPrecision(row, analysis) {
       if (row.provider === "github-repositories" && row.comparisonCandidate) {
         const wantsOpenSource = (analysis.phrases || []).includes("open source");
         if (wantsOpenSource && !row.openSourceVerified) return false;
-        if (row.categoryMatched) return true;
-        if (row.precisionMatched) return categorySignal || mentionsTarget;
+        return Boolean(row.categoryMatched);
       }
       return alternativeSignal && categorySignal;
     }
