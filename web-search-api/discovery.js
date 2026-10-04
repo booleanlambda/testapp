@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 5;
+const DISCOVERY_CACHE_VERSION = 6;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -402,6 +402,19 @@ async function runVariant(query, analysis, limit) {
   const attempts = [];
   const rows = [];
 
+  if (analysis.intent === "technical_comparison") {
+    try {
+      const found = await discoverDuckDuckGoLite(query, limit);
+      rows.push(...found);
+      attempts.push({ provider: "duckduckgo-lite", query, ok: found.length > 0 });
+      if (found.length >= Math.min(5, limit)) {
+        return { rows, attempts };
+      }
+    } catch (error) {
+      attempts.push({ provider: "duckduckgo-lite", query, ok: false, error: error?.message });
+    }
+  }
+
   if (process.env.SEARCH_DISCOVERY_BASE_URL) {
     try {
       const category = analysis.intent === "news" ? "news" : "general";
@@ -431,13 +444,13 @@ async function runVariant(query, analysis, limit) {
     }
   }
 
-  if (!rows.length || analysis.intent.startsWith("technical")) {
+  if ((!rows.length || analysis.intent.startsWith("technical")) && analysis.intent !== "technical_comparison") {
     try {
       const found = await discoverDuckDuckGo(query, limit);
       rows.push(...found);
-      attempts.push({ provider: "duckduckgo-html", query, ok: found.length > 0 });
+      attempts.push({ provider: found[0]?.provider || "duckduckgo", query, ok: found.length > 0 });
     } catch (error) {
-      attempts.push({ provider: "duckduckgo-html", query, ok: false, error: error?.message });
+      attempts.push({ provider: "duckduckgo", query, ok: false, error: error?.message });
     }
   }
 
@@ -458,7 +471,7 @@ export async function discoverWeb(query, options = {}) {
     limit,
     intent: analysis.intent,
     variants: analysis.variants,
-    provider: process.env.SEARCH_DISCOVERY_BASE_URL ? "searxng+bing" : "bing"
+    provider: process.env.SEARCH_DISCOVERY_BASE_URL ? "searxng+bing+ddg" : "bing+ddg"
   }));
 
   const cached = await getDiscoveryCache(cacheKey).catch(() => null);
