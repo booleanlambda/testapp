@@ -150,7 +150,7 @@ export function analyzeQuery(query) {
 
     if (brand && precisionAnchors.length >= 2) {
       const brandedPrecise = precisionAnchors
-        .filter((p) => p !== brand)
+        .filter((p) => p !== brand && !["community", "edition", "documentation", "docs"].includes(p))
         .slice(0, 2)
         .map((p) => `"${p}"`)
         .join(" ");
