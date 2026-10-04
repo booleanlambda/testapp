@@ -42,9 +42,10 @@ export async function searchIndex(query, options = {}) {
   const limit = Math.max(1, Math.min(Number(options.limit || 5), 20));
   const candidateLimit = Math.max(100, Math.min(Number(options.candidateLimit || 1500), 5000));
 
+  const urls = Array.isArray(options.urls) ? options.urls.filter(Boolean) : null;
   const [{ vector, model }, candidates] = await Promise.all([
     embedQuery(q),
-    recentChunks(candidateLimit)
+    recentChunks(candidateLimit, urls)
   ]);
 
   const qTerms = terms(q);
