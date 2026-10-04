@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 4;
+const DISCOVERY_CACHE_VERSION = 5;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -49,18 +49,31 @@ function normalizeRows(rows, provider) {
   })).filter((row) => row.url);
 }
 
+function canonicalResultKey(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    u.hash = "";
+    u.search = "";
+    const path = u.pathname !== "/" ? u.pathname.replace(/\/+$/, "") : "/";
+    return `${u.origin}${path}`;
+  } catch {
+    return rawUrl;
+  }
+}
+
 function fuse(rows, analysis, limit) {
   const byUrl = new Map();
 
   for (const row of rows) {
-    const current = byUrl.get(row.url);
+    const key = canonicalResultKey(row.url);
+    const current = byUrl.get(key);
     const scored = {
       ...row,
       relevance: relevanceScore(row, analysis)
     };
 
     if (!current || scored.relevance > current.relevance) {
-      byUrl.set(row.url, scored);
+      byUrl.set(key, scored);
     }
   }
 
@@ -268,6 +281,10 @@ function scoreOfficialUrl(url, analysis, parentScore = 0) {
 
   if (/\/docs\//.test(lower)) score += 3;
   if (/search|vector|api|sdk|reference|guide|tutorial|install|deployment|self-managed/.test(lower)) score += 2;
+  if (
+    (analysis.anchors || []).some((x) => ["community","self-hosted","selfhosted","local","on-prem","onprem"].includes(x)) &&
+    /self-managed|self-hosted|on-prem|local/.test(lower)
+  ) score += 8;
   if (/sitemap-index|sitemap-full/.test(lower)) score += 4;
   if (/\/(pt-br|es|ko-kr|ja-jp|it-it|de-de|fr-fr|zh-cn|zh-tw|th-th)\//.test(lower)) score -= 10;
 
