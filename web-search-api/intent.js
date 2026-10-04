@@ -146,12 +146,17 @@ export function analyzeQuery(query) {
       ? "official documentation tutorial implementation"
       : "developer documentation open source implementation";
 
-    variants.push(`${precise} ${quoted} ${suffix}`.replace(/\s+/g, " ").trim());
+    const focused = `${precise} ${quoted} ${suffix}`.replace(/\s+/g, " ").trim();
 
     if (brand && precisionAnchors.length >= 2) {
-      variants.push(`site:${brand}.com ${precise} ${quoted} official documentation`.replace(/\s+/g, " ").trim());
-    } else if (/\bagents?\b/i.test(q) && /\bcrawler|search|retrieval|rag\b/i.test(q)) {
-      variants.push(`"web crawler" agents retrieval RAG search open source`);
+      variants[0] = `site:${brand}.com ${precise} ${quoted} official documentation`.replace(/\s+/g, " ").trim();
+      variants.push(q);
+      variants.push(focused);
+    } else {
+      variants.push(focused);
+      if (/\bagents?\b/i.test(q) && /\bcrawler|search|retrieval|rag\b/i.test(q)) {
+        variants.push(`"web crawler" agents retrieval RAG search open source`);
+      }
     }
   } else if (intent === "technical_comparison") {
     const cleaned = q
