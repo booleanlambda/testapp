@@ -249,7 +249,7 @@ function githubTechnicalCategorySignal(item, analysis) {
 async function fetchGitHubRepositoryEvidence(row) {
   let repoPath = "";
   try {
-    repoPath = new URL(row.url).pathname.replace(/^\\/+|\\/+$/g, "");
+    repoPath = new URL(row.url).pathname.replace(/^\/+|\/+$/g, "");
   } catch {
     return "";
   }
