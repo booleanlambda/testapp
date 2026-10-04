@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 27;
+const DISCOVERY_CACHE_VERSION = 28;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -532,7 +532,8 @@ async function discoverGitHubTechnical(analysis, limit) {
         ].filter(Boolean).join(" — "),
         publishedAt: item.updated_at || null,
         technicalCandidate: true,
-        queryEvidence: spec.evidence,
+        queryEvidence: [],
+        repoFullName: item.full_name || null,
         openSourceVerified: Boolean(license)
       });
     }
@@ -540,7 +541,38 @@ async function discoverGitHubTechnical(analysis, limit) {
     if (rows.length >= Math.max(limit, 8)) break;
   }
 
-  return normalizeRows(rows.slice(0, Math.max(limit, 10)), "github-repositories");
+  const required = analysis.strictPrecision
+    ? Math.min(2, anchors.length)
+    : 1;
+
+  const verified = await Promise.all(
+    rows.slice(0, Math.min(Math.max(limit, 10), 12)).map(async (row) => {
+      const metadata = `${row.title || ""} ${row.snippet || ""} ${row.url || ""}`.toLowerCase();
+      const evidenceHits = new Set(
+        anchors.filter((anchor) => metadata.includes(anchor.toLowerCase()))
+      );
+
+      if (evidenceHits.size < required && row.repoFullName) {
+        const readme = await fetchGitHubRepositoryEvidence(row);
+        const lowerReadme = String(readme || "").toLowerCase();
+        for (const anchor of anchors) {
+          if (lowerReadme.includes(anchor.toLowerCase())) evidenceHits.add(anchor);
+        }
+      }
+
+      if (evidenceHits.size < required) return null;
+
+      return {
+        ...row,
+        queryEvidence: [...evidenceHits]
+      };
+    })
+  );
+
+  return normalizeRows(
+    verified.filter(Boolean).slice(0, Math.max(limit, 10)),
+    "github-repositories"
+  );
 }
 
 async function verifyOfficialSearchRows(rows, analysis, limit) {
