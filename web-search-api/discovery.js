@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 15;
+const DISCOVERY_CACHE_VERSION = 16;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -745,8 +745,9 @@ async function discoverOfficialSitemap(analysis, limit) {
   }));
   const seen = new Set();
   const pages = [];
+  const deadline = Date.now() + 9000;
 
-  while (queue.length && seen.size < 12 && pages.length < 80) {
+  while (queue.length && seen.size < 8 && pages.length < 50 && Date.now() < deadline) {
     queue.sort((a, b) => b.score - a.score);
     const item = queue.shift();
     if (!item || seen.has(item.url)) continue;
@@ -754,7 +755,8 @@ async function discoverOfficialSitemap(analysis, limit) {
 
     let xml;
     try {
-      xml = await fetchText(item.url, 10000);
+      const remaining = Math.max(1000, deadline - Date.now());
+      xml = await fetchText(item.url, Math.min(4000, remaining));
     } catch {
       continue;
     }
@@ -787,11 +789,11 @@ async function discoverOfficialSitemap(analysis, limit) {
 
   const candidates = pages
     .sort((a, b) => b.score - a.score)
-    .slice(0, Math.max(limit, 7));
+    .slice(0, Math.min(Math.max(limit, 5), 6));
 
   const enriched = await Promise.all(candidates.map(async (row, index) => {
     try {
-      const html = await fetchText(row.url, 8000);
+      const html = await fetchText(row.url, 4000);
       const $ = cheerio.load(html);
       const title =
         $("title").first().text().replace(/\s+/g, " ").trim() ||
