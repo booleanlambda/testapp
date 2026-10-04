@@ -323,6 +323,7 @@ export function passesPrecision(row, analysis) {
     if (analysis.comparisonMode === "alternatives") {
       if (row.provider === "github-repositories" && row.comparisonCandidate) {
         const wantsOpenSource = (analysis.phrases || []).includes("open source");
+        if (!row.verifiedComparison) return false;
         if (wantsOpenSource && !row.openSourceVerified) return false;
         return Boolean(row.categoryMatched);
       }
