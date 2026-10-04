@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 23;
+const DISCOVERY_CACHE_VERSION = 24;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -848,45 +848,21 @@ async function runVariant(query, analysis, limit) {
   const rows = [];
 
   if (analysis.intent === "technical_comparison") {
-    const [bingResult, githubResult] = await Promise.allSettled([
-      discoverBingHtml(query, limit),
-      discoverGitHubRepositories(analysis, limit)
-    ]);
-
-    if (bingResult.status === "fulfilled") {
-      rows.push(...bingResult.value);
-      attempts.push({ provider: "bing-html", query, ok: bingResult.value.length > 0 });
-    } else {
-      attempts.push({ provider: "bing-html", query, ok: false, error: bingResult.reason?.message });
-    }
-
-    if (githubResult.status === "fulfilled") {
-      rows.push(...githubResult.value);
+    try {
+      const found = await discoverGitHubRepositories(analysis, limit);
+      rows.push(...found);
       attempts.push({
         provider: "github-repositories",
         query: analysis.comparisonTarget || query,
-        ok: githubResult.value.length > 0
+        ok: found.length > 0
       });
-    } else {
+    } catch (error) {
       attempts.push({
         provider: "github-repositories",
         query: analysis.comparisonTarget || query,
         ok: false,
-        error: githubResult.reason?.message
+        error: error?.message
       });
-    }
-
-    const focused = fuse(rows, analysis, limit);
-    if (focused.length >= Math.min(3, limit)) {
-      return { rows, attempts };
-    }
-
-    try {
-      const found = await discoverDuckDuckGoLite(query, limit);
-      rows.push(...found);
-      attempts.push({ provider: "duckduckgo-lite", query, ok: found.length > 0 });
-    } catch (error) {
-      attempts.push({ provider: "duckduckgo-lite", query, ok: false, error: error?.message });
     }
 
     return { rows, attempts };
@@ -1018,7 +994,12 @@ export async function discoverWeb(query, options = {}) {
   const attempts = [];
   const collected = [];
 
-  for (const variant of analysis.variants) {
+  const variantsToRun =
+    analysis.intent === "technical_comparison"
+      ? analysis.variants.slice(0, 1)
+      : analysis.variants;
+
+  for (const variant of variantsToRun) {
     const remaining = deadline - Date.now();
     if (remaining <= 500) {
       attempts.push({ provider: "discovery-budget", query: variant, ok: false, error: "budget_exhausted" });
