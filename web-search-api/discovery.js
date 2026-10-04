@@ -18,6 +18,9 @@ function normalizeResultUrl(raw) {
     if (u.hostname.endsWith("duckduckgo.com") && u.searchParams.get("uddg")) {
       return decodeURIComponent(u.searchParams.get("uddg"));
     }
+    if (u.hostname.endsWith("bing.com") && /\/news\/apiclick\.aspx$/i.test(u.pathname) && u.searchParams.get("url")) {
+      return decodeURIComponent(u.searchParams.get("url"));
+    }
     if (!["http:", "https:"].includes(u.protocol)) return null;
     u.hash = "";
     return u.toString();
@@ -99,9 +102,9 @@ async function discoverSearx(query, limit, category = "general") {
   );
 }
 
-async function discoverBing(query, limit, news = false) {
+async function discoverBingNews(query, limit) {
   await throttle();
-  const url = new URL(news ? "https://www.bing.com/news/search" : "https://www.bing.com/search");
+  const url = new URL("https://www.bing.com/news/search");
   url.searchParams.set("q", query);
   url.searchParams.set("format", "rss");
   url.searchParams.set("count", String(Math.min(20, Math.max(limit, 10))));
@@ -113,7 +116,7 @@ async function discoverBing(query, limit, news = false) {
     },
     signal: AbortSignal.timeout(12000)
   });
-  if (!response.ok) throw new Error(`bing_${response.status}`);
+  if (!response.ok) throw new Error(`bing_news_${response.status}`);
 
   const xml = await response.text();
   const $ = cheerio.load(xml, { xmlMode: true });
@@ -127,7 +130,37 @@ async function discoverBing(query, limit, news = false) {
     });
   });
 
-  return normalizeRows(rows.slice(0, limit), news ? "bing-news-rss" : "bing-rss");
+  return normalizeRows(rows.slice(0, limit), "bing-news-rss");
+}
+
+async function discoverBingHtml(query, limit) {
+  await throttle();
+  const url = new URL("https://www.bing.com/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("count", String(Math.min(20, Math.max(limit, 10))));
+
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": DISCOVERY_UA,
+      accept: "text/html,application/xhtml+xml"
+    },
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!response.ok) throw new Error(`bing_html_${response.status}`);
+
+  const html = await response.text();
+  const $ = cheerio.load(html);
+  const rows = [];
+  $("li.b_algo").each((_, item) => {
+    const link = $(item).find("h2 a").first();
+    rows.push({
+      title: link.text().trim(),
+      url: link.attr("href"),
+      snippet: $(item).find(".b_caption p").first().text().trim() || $(item).find("p").first().text().trim()
+    });
+  });
+
+  return normalizeRows(rows.slice(0, limit), "bing-html");
 }
 
 async function discoverDuckDuckGo(query, limit) {
@@ -174,15 +207,25 @@ async function runVariant(query, analysis, limit) {
     }
   }
 
-  try {
-    const found = await discoverBing(query, limit, analysis.intent === "news");
-    rows.push(...found);
-    attempts.push({ provider: analysis.intent === "news" ? "bing-news-rss" : "bing-rss", query, ok: found.length > 0 });
-  } catch (error) {
-    attempts.push({ provider: analysis.intent === "news" ? "bing-news-rss" : "bing-rss", query, ok: false, error: error?.message });
+  if (analysis.intent === "news") {
+    try {
+      const found = await discoverBingNews(query, limit);
+      rows.push(...found);
+      attempts.push({ provider: "bing-news-rss", query, ok: found.length > 0 });
+    } catch (error) {
+      attempts.push({ provider: "bing-news-rss", query, ok: false, error: error?.message });
+    }
+  } else {
+    try {
+      const found = await discoverBingHtml(query, limit);
+      rows.push(...found);
+      attempts.push({ provider: "bing-html", query, ok: found.length > 0 });
+    } catch (error) {
+      attempts.push({ provider: "bing-html", query, ok: false, error: error?.message });
+    }
   }
 
-  if (!rows.length) {
+  if (!rows.length || analysis.intent.startsWith("technical")) {
     try {
       const found = await discoverDuckDuckGo(query, limit);
       rows.push(...found);
