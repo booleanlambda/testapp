@@ -118,6 +118,11 @@ export function analyzeQuery(query) {
 
   const brand = inferBrand(q, content);
   const comparisonTarget = String(q).match(/\balternatives?\s+to\s+([A-Za-z0-9._-]+)/i)?.[1]?.toLowerCase() || null;
+  const comparisonMode = /\b(alternative|alternatives|replacement|competitor|competitors)\b/i.test(q)
+    ? "alternatives"
+    : comparison
+      ? "comparison"
+      : null;
 
   const variants = [q];
 
@@ -179,6 +184,7 @@ export function analyzeQuery(query) {
     phrases: uniq(phrases),
     brand,
     comparisonTarget,
+    comparisonMode,
     strictPrecision,
     variants: uniq(variants.filter(Boolean)).slice(0, 3)
   };
@@ -272,10 +278,15 @@ export function passesPrecision(row, analysis) {
 
   if (analysis.intent === "technical_comparison" && analysis.comparisonTarget) {
     const mentionsTarget = hay.includes(analysis.comparisonTarget);
-    const comparisonSignal = /alternative|alternatives|replacement|competitor|competitors|comparison|versus|\bvs\b/.test(hay);
+    const alternativeSignal = /alternative|alternatives|replacement|competitor|competitors/.test(hay);
+    const comparisonSignal = alternativeSignal || /comparison|versus|\bvs\b/.test(hay);
     const categorySignal = /web search|search api|open source|self-hosted|agent|rag|crawler/.test(hay);
 
-    if (mentionsTarget) return comparisonSignal;
+    if (analysis.comparisonMode === "alternatives") {
+      return alternativeSignal && categorySignal;
+    }
+
+    if (mentionsTarget) return comparisonSignal && categorySignal;
     return comparisonSignal && categorySignal;
   }
 
