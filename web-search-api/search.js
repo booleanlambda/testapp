@@ -1,5 +1,5 @@
 import { embedQuery } from "./embedding.js";
-import { vectorSearchChunks } from "./storage.js";
+import { recentChunks, vectorSearchChunks } from "./storage.js";
 
 function terms(text = "") {
   return [...new Set(
@@ -19,6 +19,58 @@ function lexicalScore(queryTerms, row) {
   return hits / queryTerms.length;
 }
 
+function cosineSimilarity(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) {
+    return null;
+  }
+
+  let dot = 0;
+  let aa = 0;
+  let bb = 0;
+  for (let i = 0; i < a.length; i++) {
+    const x = Number(a[i]);
+    const y = Number(b[i]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    dot += x * y;
+    aa += x * x;
+    bb += y * y;
+  }
+
+  if (!aa || !bb) return null;
+  return dot / (Math.sqrt(aa) * Math.sqrt(bb));
+}
+
+function mergeFreshCandidates(atlasCandidates, freshRows, queryVector, model) {
+  const byChunk = new Map();
+  for (const row of atlasCandidates || []) {
+    byChunk.set(`${row.documentId}:${row.ordinal}`, row);
+  }
+
+  let added = 0;
+  for (const row of freshRows || []) {
+    if (
+      model &&
+      row.embeddingModel &&
+      row.embeddingModel !== model
+    ) {
+      continue;
+    }
+
+    const cosine = cosineSimilarity(queryVector, row.embedding);
+    if (cosine == null) continue;
+    const key = `${row.documentId}:${row.ordinal}`;
+    if (byChunk.has(key)) continue;
+
+    byChunk.set(key, {
+      ...row,
+      vectorScore: Math.max(0, Math.min(1, (cosine + 1) / 2))
+    });
+    added++;
+  }
+
+  return { candidates: [...byChunk.values()], added };
+}
+
 export async function searchIndex(query, options = {}) {
   const q = String(query || "").trim();
   if (!q) throw new Error("query_required");
@@ -36,12 +88,32 @@ export async function searchIndex(query, options = {}) {
     throw new Error("query_embedding_missing");
   }
 
-  const candidates = await vectorSearchChunks(vector, {
-    limit: candidateLimit,
-    numCandidates: Math.min(Math.max(candidateLimit * 20, 100), 10000),
-    urls,
-    embeddingModel: model
-  });
+  let atlasCandidates = [];
+  let atlasOk = true;
+  try {
+    atlasCandidates = await vectorSearchChunks(vector, {
+      limit: candidateLimit,
+      numCandidates: Math.min(Math.max(candidateLimit * 20, 100), 10000),
+      urls,
+      embeddingModel: model
+    });
+  } catch {
+    atlasOk = false;
+  }
+
+  let candidates = atlasCandidates;
+  let localAdded = 0;
+
+  if (urls?.length || !atlasOk) {
+    const freshRows = await recentChunks(candidateLimit, urls);
+    const merged = mergeFreshCandidates(atlasCandidates, freshRows, vector, model);
+    candidates = merged.candidates;
+    localAdded = merged.added;
+  }
+
+  if (!candidates.length && !atlasOk) {
+    throw new Error("vector_retrieval_unavailable");
+  }
 
   const qTerms = terms(q);
   const scored = candidates
@@ -84,7 +156,9 @@ export async function searchIndex(query, options = {}) {
   return {
     query: q,
     embeddingModel: model,
-    retrieval: "atlas-vector",
+    retrieval: atlasOk
+      ? (localAdded ? "atlas-vector+local-fresh" : "atlas-vector")
+      : "local-vector-fallback",
     vectorIndex: process.env.VECTOR_INDEX_NAME?.trim() || "chunks_embedding_v2",
     candidateCount: candidates.length,
     results
