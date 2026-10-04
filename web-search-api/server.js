@@ -386,33 +386,24 @@ server.listen(port, "0.0.0.0", async () => {
   console.log("startup diagnostics", JSON.stringify(diagnostics));
 
   (async () => {
-    const regressionQueries = [
-      "MongoDB Community mongot vector search documentation",
-      "best open source alternatives to Tavily web search API for agents"
-    ];
-    for (const query of regressionQueries) {
-      try {
-        const result = await liveSearch(query, {
-          limit: 5,
-          maxDiscover: 12,
-          maxCrawl: 5,
-          freshSeconds: 120
-        });
-        console.log("TEMP_SEARCH_REGRESSION", JSON.stringify({
-          query,
-          intent: result.discovery?.intent,
-          provider: result.discovery?.provider,
-          precisionAnchors: result.discovery?.precisionAnchors,
-          results: (result.results || []).slice(0, 5).map((x) => ({
-            title: x.title,
-            url: x.url,
-            score: x.score,
-            fallback: x.fallback || false
-          }))
-        }));
-      } catch (error) {
-        console.error("TEMP_SEARCH_REGRESSION_FAILED", query, error?.message || error);
-      }
+    const query = "best open source alternatives to Tavily web search API for agents";
+    try {
+      const result = await discoverWeb(query, { limit: 8, cacheTtl: 30 });
+      console.log("TEMP_DISCOVERY_REGRESSION", JSON.stringify({
+        query,
+        intent: result.intent,
+        provider: result.provider,
+        precisionAnchors: result.precisionAnchors,
+        effectiveQueries: result.effectiveQueries,
+        results: (result.results || []).slice(0, 8).map((x) => ({
+          title: x.title,
+          url: x.url,
+          provider: x.provider,
+          relevance: x.relevance
+        }))
+      }));
+    } catch (error) {
+      console.error("TEMP_DISCOVERY_REGRESSION_FAILED", error?.message || error);
     }
   })();
 });
