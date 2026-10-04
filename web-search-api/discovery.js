@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 12;
+const DISCOVERY_CACHE_VERSION = 13;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -240,25 +240,6 @@ function githubTechnicalCategorySignal(item, analysis) {
 
   const hay = `${name} ${description} ${topics}`;
   return /developer|sdk|api|database|vector|embedding|search|retrieval|crawler|scraper/.test(hay);
-}
-
-function officialQueryEvidence(query, analysis, row) {
-  if (!analysis.brand || !row?.url) return [];
-
-  let host;
-  try {
-    host = new URL(row.url).hostname.toLowerCase();
-  } catch {
-    return [];
-  }
-
-  const brand = analysis.brand.toLowerCase();
-  if (!(host === `${brand}.com` || host.endsWith(`.${brand}.com`))) return [];
-
-  const lowerQuery = String(query).toLowerCase();
-  return (analysis.precisionAnchors || []).filter((anchor) =>
-    lowerQuery.includes(`"${anchor.toLowerCase()}"`)
-  );
 }
 
 async function discoverGitHubRepositories(analysis, limit) {
@@ -651,17 +632,55 @@ async function discoverOfficialSitemap(analysis, limit) {
     }
   }
 
-  return pages
+  const candidates = pages
     .sort((a, b) => b.score - a.score)
-    .slice(0, Math.max(limit, 12))
-    .map((row, index) => ({
-      title: null,
-      url: row.url,
-      snippet: `Official ${analysis.brand} documentation candidate`,
-      publishedAt: null,
-      provider: "official-sitemap",
-      rank: index + 1
-    }));
+    .slice(0, Math.max(limit, 12));
+
+  const enriched = await Promise.all(candidates.map(async (row, index) => {
+    try {
+      const html = await fetchText(row.url, 8000);
+      const $ = cheerio.load(html);
+      const title =
+        $("title").first().text().replace(/\s+/g, " ").trim() ||
+        $("h1").first().text().replace(/\s+/g, " ").trim() ||
+        null;
+      const meta =
+        $('meta[name="description"]').attr("content") ||
+        $('meta[property="og:description"]').attr("content") ||
+        "";
+      const body = $("main").text() || $("article").text() || $("body").text() || "";
+      const text = `${meta} ${body}`.replace(/\s+/g, " ").trim();
+
+      let focusAt = -1;
+      for (const anchor of analysis.precisionAnchors || []) {
+        const i = text.toLowerCase().indexOf(anchor.toLowerCase());
+        if (i >= 0 && (focusAt < 0 || i < focusAt)) focusAt = i;
+      }
+
+      const start = focusAt >= 0 ? Math.max(0, focusAt - 220) : 0;
+      const snippet = text.slice(start, start + 1000).trim();
+
+      return {
+        title,
+        url: row.url,
+        snippet: snippet || `Official ${analysis.brand} documentation candidate`,
+        publishedAt: null,
+        provider: "official-sitemap",
+        rank: index + 1
+      };
+    } catch {
+      return {
+        title: null,
+        url: row.url,
+        snippet: `Official ${analysis.brand} documentation candidate`,
+        publishedAt: null,
+        provider: "official-sitemap",
+        rank: index + 1
+      };
+    }
+  }));
+
+  return enriched;
 }
 
 async function runVariant(query, analysis, limit) {
@@ -726,9 +745,6 @@ async function runVariant(query, analysis, limit) {
   } else {
     try {
       const found = await discoverBingHtml(query, limit);
-      for (const row of found) {
-        row.queryEvidence = officialQueryEvidence(query, analysis, row);
-      }
       rows.push(...found);
       attempts.push({ provider: "bing-html", query, ok: found.length > 0 });
     } catch (error) {
