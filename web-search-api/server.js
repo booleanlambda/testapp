@@ -29,19 +29,19 @@ const withTimeout = async (promise, ms = 5000) => {
 async function testMongo() {
   if (!process.env.MONGODB_URI || !process.env.MONGODB_DB) return { ok: false, reason: "not_configured" };
 
-  const client = new MongoClient(process.env.MONGODB_URI, {
-    serverSelectionTimeoutMS: 5000,
-    connectTimeoutMS: 5000
-  });
-
+  let client;
   try {
+    client = new MongoClient(process.env.MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 5000
+    });
     await client.connect();
     await client.db(process.env.MONGODB_DB).command({ ping: 1 });
     return { ok: true };
   } catch {
     return { ok: false, reason: "connection_failed" };
   } finally {
-    await client.close().catch(() => {});
+    if (client) await client.close().catch(() => {});
   }
 }
 
