@@ -88,7 +88,8 @@ export async function liveSearch(query, options = {}) {
       ranked = await searchIndex(q, {
         limit,
         urls: candidateUrls,
-        candidateLimit: 2000
+        candidateLimit: 2000,
+        perDocument: 1
       });
     } catch {}
   }
