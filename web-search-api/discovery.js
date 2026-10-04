@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 19;
+const DISCOVERY_CACHE_VERSION = 20;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -247,36 +247,8 @@ function githubTechnicalCategorySignal(item, analysis) {
 }
 
 async function fetchGitHubRepositoryEvidence(row) {
-  let repoPath = "";
   try {
-    repoPath = new URL(row.url).pathname.replace(/^\/+|\/+$/g, "");
-  } catch {
-    return "";
-  }
-  if (!/^[^/]+\/[^/]+$/.test(repoPath)) return "";
-
-  const headers = {
-    "user-agent": DISCOVERY_UA,
-    accept: "application/vnd.github.raw+json",
-    "x-github-api-version": "2022-11-28"
-  };
-  if (process.env.GITHUB_DISCOVERY_TOKEN) {
-    headers.authorization = `Bearer ${process.env.GITHUB_DISCOVERY_TOKEN}`;
-  }
-
-  try {
-    const response = await fetch(`https://api.github.com/repos/${repoPath}/readme`, {
-      headers,
-      signal: AbortSignal.timeout(6000)
-    });
-    if (response.ok) {
-      const text = await response.text();
-      if (text.trim()) return text;
-    }
-  } catch {}
-
-  try {
-    const html = await fetchText(row.url, 6000);
+    const html = await fetchText(row.url, 3500);
     const $ = cheerio.load(html);
     return (
       $("#readme").text() ||
@@ -288,7 +260,6 @@ async function fetchGitHubRepositoryEvidence(row) {
     return "";
   }
 }
-
 function comparisonCategoryEvidence(text, categoryPhrase) {
   const hay = String(text || "").toLowerCase();
 
@@ -386,7 +357,8 @@ async function discoverGitHubRepositories(analysis, limit) {
   const rows = [];
   const seen = new Set();
 
-  for (const spec of queries) {
+  const specs = queries.slice(0, 3);
+  const responses = await Promise.allSettled(specs.map(async (spec) => {
     const url = new URL("https://api.github.com/search/repositories");
     url.searchParams.set("q", spec.q);
     url.searchParams.set("sort", "stars");
@@ -402,19 +374,17 @@ async function discoverGitHubRepositories(analysis, limit) {
       headers.authorization = `Bearer ${process.env.GITHUB_DISCOVERY_TOKEN}`;
     }
 
-    let response;
-    try {
-      response = await fetch(url, {
-        headers,
-        signal: AbortSignal.timeout(10000)
-      });
-    } catch {
-      continue;
-    }
+    const response = await fetch(url, {
+      headers,
+      signal: AbortSignal.timeout(6000)
+    });
+    if (!response.ok) throw new Error(`github_search_${response.status}`);
+    return { spec, json: await response.json() };
+  }));
 
-    if (!response.ok) continue;
-
-    const json = await response.json();
+  for (const result of responses) {
+    if (result.status !== "fulfilled") continue;
+    const { spec, json } = result.value;
     for (const item of json?.items || []) {
       if (!item?.html_url || seen.has(item.html_url) || item.archived) continue;
       if (/^awesome[-_]/i.test(item.name || "")) continue;
@@ -447,10 +417,7 @@ async function discoverGitHubRepositories(analysis, limit) {
         defaultBranch: item.default_branch || null
       });
     }
-
-    if (rows.length >= Math.max(limit, 10)) break;
   }
-
   const verified = await verifyGitHubComparisonRows(rows, analysis, categoryPhrase, limit);
   return normalizeRows(verified.slice(0, Math.max(limit, 10)), "github-repositories");
 }
