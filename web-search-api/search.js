@@ -66,12 +66,12 @@ export async function searchIndex(query, options = {}) {
     .sort((a, b) => b.score - a.score);
 
   const results = [];
-  const perDocument = new Map();
+  const perDocumentCounts = new Map();
 
   for (const row of scored) {
-    const used = perDocument.get(row.documentId) || 0;
+    const used = perDocumentCounts.get(row.documentId) || 0;
     if (used >= perDocument) continue;
-    perDocument.set(row.documentId, used + 1);
+    perDocumentCounts.set(row.documentId, used + 1);
 
     results.push({
       title: row.title,
