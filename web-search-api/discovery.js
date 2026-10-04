@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 37;
+const DISCOVERY_CACHE_VERSION = 38;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -635,6 +635,106 @@ function officialTechnicalHosts(analysis) {
   return [...new Set(hosts)];
 }
 
+function directOfficialTechnicalUrls(analysis) {
+  const anchors = new Set(
+    [...(analysis.anchors || []), ...(analysis.precisionAnchors || [])]
+      .map((x) => String(x).toLowerCase())
+  );
+  const terms = new Set(officialEntityTerms(analysis));
+  const urls = [];
+
+  if (terms.has("postgres") || terms.has("postgresql")) {
+    const walFocused = [...anchors].some((x) =>
+      /^(wal|wal_compression|checkpoint|checkpoints|full-page|hint|bits)$/.test(x)
+    );
+    if (walFocused) {
+      urls.push(
+        "https://www.postgresql.org/docs/current/runtime-config-wal.html",
+        "https://www.postgresql.org/docs/current/wal-configuration.html",
+        "https://www.postgresql.org/docs/current/wal.html"
+      );
+    } else {
+      urls.push("https://www.postgresql.org/docs/current/");
+    }
+  }
+
+  if (terms.has("mongodb")) {
+    const searchFocused =
+      anchors.has("mongot") ||
+      anchors.has("community") ||
+      (analysis.phrases || []).includes("vector search");
+    if (searchFocused) {
+      urls.push(
+        "https://www.mongodb.com/docs/search/self-managed/current/",
+        "https://www.mongodb.com/docs/vector-search/",
+        "https://www.mongodb.com/docs/search/self-managed/current/installation/linux/"
+      );
+    } else {
+      urls.push("https://www.mongodb.com/docs/llms.txt");
+    }
+  }
+
+  return [...new Set(urls)];
+}
+
+async function discoverDirectOfficialRows(analysis, limit) {
+  const urls = directOfficialTechnicalUrls(analysis).slice(0, 4);
+  if (!urls.length) return [];
+
+  const anchors = analysis.precisionAnchors || [];
+  const required = Math.min(2, anchors.length);
+
+  const checked = await Promise.all(urls.map(async (url, index) => {
+    try {
+      const raw = await fetchText(url, 3200);
+      const isHtml = /<html|<!doctype/i.test(raw);
+      let title = null;
+      let text = raw;
+
+      if (isHtml) {
+        const $ = cheerio.load(raw);
+        title =
+          $("title").first().text().replace(/\s+/g, " ").trim() ||
+          $("h1").first().text().replace(/\s+/g, " ").trim() ||
+          null;
+        const meta =
+          $('meta[name="description"]').attr("content") ||
+          $('meta[property="og:description"]').attr("content") ||
+          "";
+        const body = $("main").text() || $("article").text() || $("body").text() || "";
+        text = `${meta} ${body}`.replace(/\s+/g, " ").trim();
+      }
+
+      const lower = `${title || ""} ${text}`.toLowerCase();
+      const hits = anchors.filter((anchor) =>
+        lower.includes(String(anchor).toLowerCase())
+      );
+      if (required && hits.length < required) return null;
+
+      let focusAt = -1;
+      for (const anchor of hits) {
+        const i = lower.indexOf(String(anchor).toLowerCase());
+        if (i >= 0 && (focusAt < 0 || i < focusAt)) focusAt = i;
+      }
+      const start = focusAt >= 0 ? Math.max(0, focusAt - 220) : 0;
+
+      return {
+        title: title || `Official ${officialEntityTerms(analysis)[0] || "technical"} documentation`,
+        url,
+        snippet: text.slice(start, start + 1200).trim(),
+        publishedAt: null,
+        provider: "official-direct-verified",
+        rank: index + 1,
+        queryEvidence: hits
+      };
+    } catch {
+      return null;
+    }
+  }));
+
+  return checked.filter(Boolean).slice(0, Math.max(limit, 5));
+}
+
 function looksLikeOfficialTechnicalRow(row, analysis) {
   const terms = officialEntityTerms(analysis);
   if (!terms.length) return false;
@@ -675,6 +775,13 @@ async function discoverOfficialTechnicalRows(analysis, limit) {
   const terms = officialEntityTerms(analysis);
   if (!terms.length) return [];
 
+  const direct = await boundedValue(
+    discoverDirectOfficialRows(analysis, limit),
+    3800,
+    []
+  );
+  if (direct.length) return direct;
+
   const hosts = officialTechnicalHosts(analysis);
   const entity = terms.length > 1 ? terms[1] : terms[0];
   const distinctive = (analysis.precisionAnchors || [])
@@ -685,40 +792,30 @@ async function discoverOfficialTechnicalRows(analysis, limit) {
     .slice(0, 2);
 
   const targetedQuery = [
-    hosts[0] ? `site:${hosts[0]}` : "",
+    hosts[0] ? `site:${hosts[0]}` : entity,
     ...distinctive,
     ...phraseTerms,
     "documentation"
   ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 
-  const broadQuery = [
-    entity,
-    "official documentation",
-    ...distinctive.slice(0, 3),
-    ...phraseTerms.slice(0, 1)
-  ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  const [bingRows, ddgRows] = await Promise.all([
+    boundedValue(discoverBingHtml(targetedQuery, Math.max(limit, 10)), 3800, []),
+    boundedValue(discoverDuckDuckGoHtml(targetedQuery, Math.max(limit, 10)), 3800, [])
+  ]);
 
-  const collect = async (query) => {
-    const [bingRows, ddgRows] = await Promise.all([
-      boundedValue(discoverBingHtml(query, Math.max(limit, 10)), 4800, []),
-      boundedValue(discoverDuckDuckGoHtml(query, Math.max(limit, 10)), 4800, [])
-    ]);
+  const seen = new Set();
+  const candidates = [...bingRows, ...ddgRows].filter((row) => {
+    const key = canonicalResultKey(row.url);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return looksLikeOfficialTechnicalRow(row, analysis);
+  });
 
-    const seen = new Set();
-    return [...bingRows, ...ddgRows].filter((row) => {
-      const key = canonicalResultKey(row.url);
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return looksLikeOfficialTechnicalRow(row, analysis);
-    });
-  };
-
-  let candidates = await collect(targetedQuery);
-  if (!candidates.length && broadQuery !== targetedQuery) {
-    candidates = await collect(broadQuery);
-  }
-
-  const verified = await verifyTechnicalWebRows(candidates, analysis, limit);
+  const verified = await boundedValue(
+    verifyTechnicalWebRows(candidates, analysis, limit),
+    2800,
+    []
+  );
 
   return verified.map((row) => ({
     ...row,
