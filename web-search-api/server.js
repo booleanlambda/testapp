@@ -393,7 +393,7 @@ server.listen(port, "0.0.0.0", async () => {
         validate(result) {
           return (result.results || []).some((row) => {
             const hay = `${row.title || ""} ${row.snippet || ""}`.toLowerCase();
-            return /mongodb\\.com/i.test(row.url || "") && /mongot|vector search/.test(hay);
+            return /mongodb\.com/i.test(row.url || "") && /mongot|vector search/.test(hay);
           });
         }
       },
