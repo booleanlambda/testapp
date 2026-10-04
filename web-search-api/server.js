@@ -388,6 +388,57 @@ server.listen(port, "0.0.0.0", async () => {
 
 
   (async () => {
+    const startedAt = Date.now();
+    const query = "How do MongoDB Vector Search scalar and binary quantization differ in memory savings and accuracy tradeoffs?";
+    try {
+      const result = await withTimeout(
+        searchIndex(query, { limit: 8, candidateLimit: 100, perDocument: 8 }),
+        30000
+      );
+      const canonical = "https://www.mongodb.com/docs/vector-search/about/vector-quantization";
+      const rows = (result.results || []).filter((row) => row.url === canonical);
+      const evidence = rows.map((row) => String(row.content || "")).join("\n").toLowerCase();
+      const checks = {
+        canonical: rows.length > 0,
+        scalar: /scalar/.test(evidence),
+        binary: /binary/.test(evidence),
+        memory: /memory|ram|in memory|disk/.test(evidence),
+        accuracy: /accuracy|recall|trade-?off/.test(evidence)
+      };
+      const passed = Object.values(checks).every(Boolean);
+      const payload = {
+        name: "mongodb_quantization_answerability",
+        query,
+        passed,
+        durationMs: Date.now() - startedAt,
+        retrieval: result.retrieval,
+        vectorIndex: result.vectorIndex,
+        candidateCount: result.candidateCount,
+        checks,
+        results: rows.slice(0, 5).map((row) => ({
+          url: row.url,
+          score: row.score,
+          semanticScore: row.semanticScore,
+          excerpt: String(row.content || "").slice(0, 420)
+        }))
+      };
+      if (passed) {
+        console.log("RIGID_INDEX_PASS", JSON.stringify(payload));
+      } else {
+        console.error("RIGID_INDEX_FAIL", JSON.stringify(payload));
+      }
+    } catch (error) {
+      console.error("RIGID_INDEX_FAIL", JSON.stringify({
+        name: "mongodb_quantization_answerability",
+        query,
+        passed: false,
+        durationMs: Date.now() - startedAt,
+        error: error?.message || String(error)
+      }));
+    }
+  })();
+
+  (async () => {
     const tests = [
       {
         name: "mongodb_vector_docs",
