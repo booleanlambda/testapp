@@ -244,6 +244,12 @@ export function relevanceScore(row, analysis) {
   if (analysis.intent === "technical_comparison") {
     if (/alternative|alternatives|competitor|competitors|comparison|versus|\bvs\b/.test(hay)) score += 4;
     if (analysis.comparisonTarget && hay.includes(analysis.comparisonTarget)) score += 5;
+
+    if (row.provider === "github-repositories" && row.comparisonCandidate) {
+      if (row.precisionMatched) score += 8;
+      if (row.categoryMatched) score += 10;
+      if (row.openSourceVerified) score += 4;
+    }
   }
 
   const needed = Math.min(2, analysis.anchors.length);
@@ -287,6 +293,12 @@ export function passesPrecision(row, analysis) {
     const categorySignal = /web search|search api|open source|self-hosted|agent|rag|crawler/.test(hay);
 
     if (analysis.comparisonMode === "alternatives") {
+      if (row.provider === "github-repositories" && row.comparisonCandidate) {
+        const wantsOpenSource = (analysis.phrases || []).includes("open source");
+        if (wantsOpenSource && !row.openSourceVerified) return false;
+        if (row.categoryMatched) return true;
+        if (row.precisionMatched) return categorySignal || mentionsTarget;
+      }
       return alternativeSignal && categorySignal;
     }
 
