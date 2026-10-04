@@ -389,6 +389,69 @@ server.listen(port, "0.0.0.0", async () => {
 
   (async () => {
     const startedAt = Date.now();
+    const query = "How does pgvector tune HNSW m and ef_construction, and what are the tradeoffs with index build time and recall?";
+    try {
+      const result = await withTimeout(
+        liveSearch(query, {
+          limit: 8,
+          maxDiscover: 8,
+          maxCrawl: 4,
+          freshSeconds: 60
+        }),
+        70000
+      );
+
+      const rankedRows = (result.results || []).filter((row) => row.fallback !== true);
+      const evidence = rankedRows.map((row) => String(row.content || "")).join("\n").toLowerCase();
+      const checks = {
+        discovered: Number(result.discovery?.resultCount || 0) > 0,
+        freshlyIndexed: Number(result.crawl?.indexed || 0) > 0,
+        atlasRanked: rankedRows.length > 0,
+        pgvectorSource: rankedRows.some((row) => /pgvector/i.test(`${row.url || ""} ${row.title || ""}`)),
+        m: /(?:^|\W)m(?:\W|$)/i.test(evidence),
+        efConstruction: /ef_construction/i.test(evidence),
+        buildTradeoff: /build|construction|insert|index/i.test(evidence),
+        recall: /recall/i.test(evidence)
+      };
+      const passed = Object.values(checks).every(Boolean);
+      const payload = {
+        name: "pgvector_hnsw_full_pipeline",
+        query,
+        passed,
+        durationMs: Date.now() - startedAt,
+        discovery: result.discovery,
+        crawl: result.crawl,
+        embeddingModel: result.embeddingModel,
+        checks,
+        results: (result.results || []).slice(0, 8).map((row) => ({
+          title: row.title,
+          url: row.url,
+          score: row.score,
+          semanticScore: row.semanticScore,
+          lexicalScore: row.lexicalScore,
+          fallback: row.fallback || false,
+          excerpt: String(row.content || "").slice(0, 420)
+        }))
+      };
+
+      if (passed) {
+        console.log("RIGID_LIVE_PASS", JSON.stringify(payload));
+      } else {
+        console.error("RIGID_LIVE_FAIL", JSON.stringify(payload));
+      }
+    } catch (error) {
+      console.error("RIGID_LIVE_FAIL", JSON.stringify({
+        name: "pgvector_hnsw_full_pipeline",
+        query,
+        passed: false,
+        durationMs: Date.now() - startedAt,
+        error: error?.message || String(error)
+      }));
+    }
+  })();
+
+  (async () => {
+    const startedAt = Date.now();
     const query = "How do MongoDB Vector Search scalar and binary quantization differ in memory savings and accuracy tradeoffs?";
     try {
       const result = await withTimeout(
