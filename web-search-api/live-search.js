@@ -48,6 +48,7 @@ export async function liveSearch(query, options = {}) {
       if (isFresh(existing, freshSeconds)) {
         return {
           url: row.url,
+          canonicalUrl: existing.url || row.url,
           status: "reused",
           crawledAt: existing.crawledAt
         };
@@ -62,6 +63,7 @@ export async function liveSearch(query, options = {}) {
 
       return {
         url: row.url,
+        canonicalUrl: result.pages?.[0]?.url || row.url,
         status: result.indexedPages > 0 ? "indexed" : "failed",
         indexedPages: result.indexedPages,
         failures: result.failures
@@ -75,7 +77,12 @@ export async function liveSearch(query, options = {}) {
     }
   });
 
-  const candidateUrls = discovery.results.map((row) => row.url);
+  const candidateUrls = [...new Set(
+    crawlActivity
+      .filter((row) => row && (row.status === "indexed" || row.status === "reused"))
+      .map((row) => row.canonicalUrl || row.url)
+      .filter(Boolean)
+  )];
   let ranked = {
     query: q,
     embeddingModel: null,
