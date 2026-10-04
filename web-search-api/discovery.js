@@ -2,7 +2,8 @@ import * as cheerio from "cheerio";
 import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore } from "./intent.js";
 
-const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4; +https://web-search-api-m30a.onrender.com)";
+const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
+const DISCOVERY_CACHE_VERSION = 2;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -20,6 +21,14 @@ function normalizeResultUrl(raw) {
     }
     if (u.hostname.endsWith("bing.com") && /\/news\/apiclick\.aspx$/i.test(u.pathname) && u.searchParams.get("url")) {
       return decodeURIComponent(u.searchParams.get("url"));
+    }
+    if (u.hostname.endsWith("bing.com") && /\/ck\/a$/i.test(u.pathname) && u.searchParams.get("u")) {
+      const encoded = u.searchParams.get("u");
+      try {
+        const payload = encoded.startsWith("a1") ? encoded.slice(2) : encoded;
+        const decoded = Buffer.from(payload, "base64url").toString("utf8");
+        if (/^https?:\/\//i.test(decoded)) return decoded;
+      } catch {}
     }
     if (!["http:", "https:"].includes(u.protocol)) return null;
     u.hash = "";
@@ -55,11 +64,18 @@ function fuse(rows, analysis, limit) {
     }
   }
 
-  const ranked = [...byUrl.values()]
+  let ranked = [...byUrl.values()]
     .sort((a, b) => {
       if (b.relevance !== a.relevance) return b.relevance - a.relevance;
       return (a.rank || 99) - (b.rank || 99);
-    })
+    });
+
+  if (analysis.intent.startsWith("technical")) {
+    const relevant = ranked.filter((row) => row.relevance >= 0);
+    if (relevant.length) ranked = relevant;
+  }
+
+  ranked = ranked
     .slice(0, limit)
     .map((row, index) => ({
       title: row.title,
@@ -107,7 +123,7 @@ async function discoverBingNews(query, limit) {
   const url = new URL("https://www.bing.com/news/search");
   url.searchParams.set("q", query);
   url.searchParams.set("format", "rss");
-  url.searchParams.set("count", String(Math.min(20, Math.max(limit, 10))));
+  url.searchParams.set("count", "20");
 
   const response = await fetch(url, {
     headers: {
@@ -130,14 +146,14 @@ async function discoverBingNews(query, limit) {
     });
   });
 
-  return normalizeRows(rows.slice(0, limit), "bing-news-rss");
+  return normalizeRows(rows.slice(0, Math.max(limit, 20)), "bing-news-rss");
 }
 
 async function discoverBingHtml(query, limit) {
   await throttle();
   const url = new URL("https://www.bing.com/search");
   url.searchParams.set("q", query);
-  url.searchParams.set("count", String(Math.min(20, Math.max(limit, 10))));
+  url.searchParams.set("count", "20");
 
   const response = await fetch(url, {
     headers: {
@@ -160,7 +176,7 @@ async function discoverBingHtml(query, limit) {
     });
   });
 
-  return normalizeRows(rows.slice(0, limit), "bing-html");
+  return normalizeRows(rows.slice(0, Math.max(limit, 20)), "bing-html");
 }
 
 async function discoverDuckDuckGo(query, limit) {
@@ -247,6 +263,7 @@ export async function discoverWeb(query, options = {}) {
   const analysis = analyzeQuery(q);
 
   const cacheKey = sha256(JSON.stringify({
+    cacheVersion: DISCOVERY_CACHE_VERSION,
     q: q.toLowerCase(),
     limit,
     intent: analysis.intent,
