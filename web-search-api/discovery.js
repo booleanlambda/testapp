@@ -1,9 +1,9 @@
 import * as cheerio from "cheerio";
 import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
-import { analyzeQuery, relevanceScore } from "./intent.js";
+import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 2;
+const DISCOVERY_CACHE_VERSION = 3;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -70,9 +70,17 @@ function fuse(rows, analysis, limit) {
       return (a.rank || 99) - (b.rank || 99);
     });
 
+  if (analysis.strictPrecision) {
+    ranked = ranked.filter((row) => passesPrecision(row, analysis));
+  }
+
   if (analysis.intent.startsWith("technical")) {
-    const relevant = ranked.filter((row) => row.relevance >= 0);
-    if (relevant.length) ranked = relevant;
+    ranked = ranked.filter((row) => row.relevance >= 0);
+  }
+
+  if (analysis.intent === "news") {
+    const focused = ranked.filter((row) => row.relevance >= 0);
+    if (focused.length) ranked = focused;
   }
 
   ranked = ranked
@@ -294,6 +302,8 @@ export async function discoverWeb(query, options = {}) {
     query: q,
     intent: analysis.intent,
     anchors: analysis.anchors,
+    precisionAnchors: analysis.precisionAnchors,
+    strictPrecision: analysis.strictPrecision,
     effectiveQueries: analysis.variants,
     results,
     provider: results[0]?.provider || null,
