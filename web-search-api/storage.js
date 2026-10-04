@@ -136,6 +136,7 @@ export async function recentChunks(limit = 1500, urls = null) {
           text: 1,
           ordinal: 1,
           embedding: 1,
+          embeddingModel: 1,
           crawledAt: 1
         }
       }
