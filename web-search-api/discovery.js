@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 10;
+const DISCOVERY_CACHE_VERSION = 11;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -49,7 +49,9 @@ function normalizeRows(rows, provider) {
     precisionMatched: Boolean(row.precisionMatched),
     comparisonCandidate: Boolean(row.comparisonCandidate),
     categoryMatched: Boolean(row.categoryMatched),
-    openSourceVerified: Boolean(row.openSourceVerified)
+    openSourceVerified: Boolean(row.openSourceVerified),
+    technicalCandidate: Boolean(row.technicalCandidate),
+    queryEvidence: Array.isArray(row.queryEvidence) ? row.queryEvidence : []
   })).filter((row) => row.url);
 }
 
@@ -205,6 +207,24 @@ async function discoverBingHtml(query, limit) {
 }
 
 function githubCategorySignal(item) {
+  const descriptive = [
+    item?.full_name,
+    item?.name,
+    item?.description
+  ].filter(Boolean).join(" ").toLowerCase();
+  const topics = (Array.isArray(item?.topics) ? item.topics : []).join(" ").toLowerCase();
+
+  const directSearch =
+    /\bmetasearch(?:[- ]engine)?\b|\bsearch[- ]engine\b|\bweb[- ]search\b|\bsearch[- ]api\b|\bai[- ]search\b|\bcrawler\b|\bscraper\b/.test(descriptive);
+  const strongTopic =
+    /metasearch-engine|search-engine|web-search|ai-search|ai-crawler|web-crawler|\bcrawler\b/.test(topics);
+  const functionalDescription =
+    /search|engine|crawl|scrap|retrieval|api/.test(descriptive);
+
+  return directSearch || (strongTopic && functionalDescription);
+}
+
+function githubTechnicalCategorySignal(item, analysis) {
   const hay = [
     item?.full_name,
     item?.name,
@@ -212,12 +232,30 @@ function githubCategorySignal(item) {
     ...(Array.isArray(item?.topics) ? item.topics : [])
   ].filter(Boolean).join(" ").toLowerCase();
 
-  const directSearch =
-    /\bmetasearch\b|\bsearch[- ]engine\b|\bweb[- ]search\b|\bsearch[- ]api\b/.test(hay);
-  const callable =
-    /\bapi\b|\bserver\b|\bself[- ]hosted\b|\bmetasearch\b|\bcrawler\b|\bscraper\b|\bretrieval\b/.test(hay);
+  if ((analysis.phrases || []).includes("web crawler")) {
+    return /crawl|scrap|browser|web[- ]data|data[- ]extract|html[- ]to[- ]markdown/.test(hay);
+  }
 
-  return directSearch && callable;
+  return /developer|sdk|api|database|vector|embedding|search|retrieval|crawler|scraper/.test(hay);
+}
+
+function officialQueryEvidence(query, analysis, row) {
+  if (!analysis.brand || !row?.url) return [];
+
+  let host;
+  try {
+    host = new URL(row.url).hostname.toLowerCase();
+  } catch {
+    return [];
+  }
+
+  const brand = analysis.brand.toLowerCase();
+  if (!(host === `${brand}.com` || host.endsWith(`.${brand}.com`))) return [];
+
+  const lowerQuery = String(query).toLowerCase();
+  return (analysis.precisionAnchors || []).filter((anchor) =>
+    lowerQuery.includes(`"${anchor.toLowerCase()}"`)
+  );
 }
 
 async function discoverGitHubRepositories(analysis, limit) {
@@ -303,6 +341,7 @@ async function discoverGitHubRepositories(analysis, limit) {
     const json = await response.json();
     for (const item of json?.items || []) {
       if (!item?.html_url || seen.has(item.html_url) || item.archived) continue;
+      if (/^awesome[-_]/i.test(item.name || "")) continue;
 
       const license = item.license?.spdx_id && item.license.spdx_id !== "NOASSERTION"
         ? item.license.spdx_id
@@ -332,6 +371,93 @@ async function discoverGitHubRepositories(analysis, limit) {
     }
 
     if (rows.length >= Math.max(limit, 10)) break;
+  }
+
+  return normalizeRows(rows.slice(0, Math.max(limit, 10)), "github-repositories");
+}
+
+async function discoverGitHubTechnical(analysis, limit) {
+  const wantsOpenSource = (analysis.phrases || []).includes("open source");
+  const anchors = (analysis.precisionAnchors || []).filter((x) => x !== "github");
+  if (anchors.length < 2) return [];
+
+  const distinctive = anchors.filter((x) => !["self-hosted", "selfhosted"].includes(x));
+  const specs = [];
+
+  if (distinctive.length >= 2) {
+    const evidence = distinctive.slice(0, 3);
+    specs.push({
+      q: `${evidence.join(" ")} in:name,description,readme`,
+      evidence
+    });
+  }
+
+  const broadEvidence = anchors.slice(0, 3);
+  specs.push({
+    q: `${broadEvidence.join(" ")} in:name,description,readme`,
+    evidence: broadEvidence
+  });
+
+  const rows = [];
+  const seen = new Set();
+
+  for (const spec of specs) {
+    const url = new URL("https://api.github.com/search/repositories");
+    url.searchParams.set("q", spec.q);
+    url.searchParams.set("sort", "stars");
+    url.searchParams.set("order", "desc");
+    url.searchParams.set("per_page", String(Math.min(10, Math.max(limit, 6))));
+
+    const headers = {
+      "user-agent": DISCOVERY_UA,
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28"
+    };
+    if (process.env.GITHUB_DISCOVERY_TOKEN) {
+      headers.authorization = `Bearer ${process.env.GITHUB_DISCOVERY_TOKEN}`;
+    }
+
+    let response;
+    try {
+      response = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(10000)
+      });
+    } catch {
+      continue;
+    }
+    if (!response.ok) continue;
+
+    const json = await response.json();
+    for (const item of json?.items || []) {
+      if (!item?.html_url || seen.has(item.html_url) || item.archived) continue;
+      if (/^awesome[-_]/i.test(item.name || "")) continue;
+      if (!githubTechnicalCategorySignal(item, analysis)) continue;
+
+      const license = item.license?.spdx_id && item.license.spdx_id !== "NOASSERTION"
+        ? item.license.spdx_id
+        : null;
+      if (wantsOpenSource && !license) continue;
+
+      seen.add(item.html_url);
+      const topics = Array.isArray(item.topics) ? item.topics.slice(0, 8) : [];
+      rows.push({
+        title: item.full_name || item.name,
+        url: item.html_url,
+        snippet: [
+          item.description,
+          topics.length ? `Topics: ${topics.join(", ")}` : null,
+          license ? `License: ${license}` : null,
+          item.stargazers_count != null ? `GitHub stars: ${item.stargazers_count}` : null
+        ].filter(Boolean).join(" — "),
+        publishedAt: item.updated_at || null,
+        technicalCandidate: true,
+        queryEvidence: spec.evidence,
+        openSourceVerified: Boolean(license)
+      });
+    }
+
+    if (rows.length >= Math.max(limit, 8)) break;
   }
 
   return normalizeRows(rows.slice(0, Math.max(limit, 10)), "github-repositories");
@@ -597,10 +723,30 @@ async function runVariant(query, analysis, limit) {
   } else {
     try {
       const found = await discoverBingHtml(query, limit);
+      for (const row of found) {
+        row.queryEvidence = officialQueryEvidence(query, analysis, row);
+      }
       rows.push(...found);
       attempts.push({ provider: "bing-html", query, ok: found.length > 0 });
     } catch (error) {
       attempts.push({ provider: "bing-html", query, ok: false, error: error?.message });
+    }
+
+    if (
+      (analysis.intent === "technical" || analysis.intent === "technical_tutorial") &&
+      ((analysis.phrases || []).includes("web crawler") || (analysis.anchors || []).includes("github"))
+    ) {
+      try {
+        const found = await discoverGitHubTechnical(analysis, limit);
+        rows.push(...found);
+        attempts.push({ provider: "github-repositories", query: "technical-evidence", ok: found.length > 0 });
+        const focused = fuse(rows, analysis, limit);
+        if (focused.length >= Math.min(3, limit)) {
+          return { rows, attempts };
+        }
+      } catch (error) {
+        attempts.push({ provider: "github-repositories", query: "technical-evidence", ok: false, error: error?.message });
+      }
     }
   }
 
