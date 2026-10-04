@@ -139,6 +139,62 @@ export async function recentChunks(limit = 1500, urls = null) {
 }
 
 
+export async function vectorSearchChunks(vector, options = {}) {
+  if (!Array.isArray(vector) || !vector.length) {
+    throw new Error("vector_required");
+  }
+
+  const db = await getDb();
+  const limit = Math.max(1, Math.min(Number(options.limit || 100), 500));
+  const numCandidates = Math.max(
+    limit,
+    Math.min(Number(options.numCandidates || Math.max(limit * 20, 100)), 10000)
+  );
+  const index = process.env.VECTOR_INDEX_NAME?.trim() || "chunks_embedding_v2";
+  const urls = Array.isArray(options.urls)
+    ? [...new Set(options.urls.filter(Boolean))].slice(0, 100)
+    : [];
+  const embeddingModel = String(options.embeddingModel || "").trim();
+
+  const filters = [];
+  if (embeddingModel) filters.push({ embeddingModel });
+  if (urls.length) filters.push({ url: { $in: urls } });
+
+  const vectorSearch = {
+    index,
+    path: "embedding",
+    queryVector: vector,
+    numCandidates,
+    limit
+  };
+
+  if (filters.length === 1) {
+    vectorSearch.filter = filters[0];
+  } else if (filters.length > 1) {
+    vectorSearch.filter = { $and: filters };
+  }
+
+  return db.collection("chunks")
+    .aggregate([
+      { $vectorSearch: vectorSearch },
+      {
+        $project: {
+          _id: 0,
+          documentId: 1,
+          url: 1,
+          title: 1,
+          text: 1,
+          ordinal: 1,
+          embeddingModel: 1,
+          crawledAt: 1,
+          vectorScore: { $meta: "vectorSearchScore" }
+        }
+      }
+    ])
+    .toArray();
+}
+
+
 export async function getDocument(url) {
   const db = await getDb();
   return db.collection("documents").findOne(
