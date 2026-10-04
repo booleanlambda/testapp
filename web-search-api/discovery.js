@@ -253,7 +253,7 @@ async function fetchGitHubRepositoryEvidence(row) {
   } catch {
     return "";
   }
-  if (!/^[^/]+\\/[^/]+$/.test(repoPath)) return "";
+  if (!/^[^/]+\/[^/]+$/.test(repoPath)) return "";
 
   const headers = {
     "user-agent": DISCOVERY_UA,
@@ -283,7 +283,7 @@ async function fetchGitHubRepositoryEvidence(row) {
       $("article.markdown-body").text() ||
       $("body").text() ||
       ""
-    ).replace(/\\s+/g, " ").trim();
+    ).replace(/\s+/g, " ").trim();
   } catch {
     return "";
   }
@@ -293,18 +293,18 @@ function comparisonCategoryEvidence(text, categoryPhrase) {
   const hay = String(text || "").toLowerCase();
 
   if (categoryPhrase === "web search api" || categoryPhrase === "search api") {
-    return /\\bweb search\\b|\\bsearch api\\b|\\bsearch engine\\b|\\bmetasearch\\b|\\bsearch endpoint\\b|\\binternet search\\b|\\bsearch the web\\b/.test(hay);
+    return /\bweb search\b|\bsearch api\b|\bsearch engine\b|\bmetasearch\b|\bsearch endpoint\b|\binternet search\b|\bsearch the web\b/.test(hay);
   }
 
   if (categoryPhrase === "web crawler") {
-    return /\\bweb crawler\\b|\\bcrawler\\b|\\bweb scraping\\b|\\bscraper\\b|\\bdata extraction\\b/.test(hay);
+    return /\bweb crawler\b|\bcrawler\b|\bweb scraping\b|\bscraper\b|\bdata extraction\b/.test(hay);
   }
 
   if (categoryPhrase === "vector search") {
-    return /\\bvector search\\b|\\bsemantic search\\b|\\bvector database\\b|\\bembedding search\\b/.test(hay);
+    return /\bvector search\b|\bsemantic search\b|\bvector database\b|\bembedding search\b/.test(hay);
   }
 
-  return /\\bsearch\\b|\\bretrieval\\b|\\bapi\\b|\\bcrawler\\b|\\bagent\\b|\\brag\\b/.test(hay);
+  return /\bsearch\b|\bretrieval\b|\bapi\b|\bcrawler\b|\bagent\b|\brag\b/.test(hay);
 }
 
 async function verifyGitHubComparisonRows(rows, analysis, categoryPhrase, limit) {
