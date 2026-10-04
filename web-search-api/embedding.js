@@ -136,12 +136,37 @@ async function rawEmbeddingRequest(input, model, purpose, hints = false) {
   return vectors;
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isTransientEmbeddingError(error) {
+  return (
+    [408, 429, 500, 502, 503, 504].includes(error?.status) ||
+    ["AbortError", "TimeoutError", "TypeError"].includes(error?.name)
+  );
+}
+
+async function requestWithRetry(input, model, purpose, hints) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await rawEmbeddingRequest(input, model, purpose, hints);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientEmbeddingError(error) || attempt === 2) throw error;
+      await sleep(350 * (2 ** attempt));
+    }
+  }
+
+  throw lastError || new Error("embedding_request_failed");
+}
+
 async function requestEmbeddingBatch(input, model, purpose) {
   try {
-    return await rawEmbeddingRequest(input, model, purpose, false);
+    return await requestWithRetry(input, model, purpose, false);
   } catch (error) {
     if (error?.status === 400 || error?.status === 422) {
-      return rawEmbeddingRequest(input, model, purpose, true);
+      return requestWithRetry(input, model, purpose, true);
     }
     throw error;
   }
