@@ -386,24 +386,41 @@ server.listen(port, "0.0.0.0", async () => {
   console.log("startup diagnostics", JSON.stringify(diagnostics));
 
   (async () => {
-    const query = "best open source alternatives to Tavily web search API for agents";
-    try {
-      const result = await discoverWeb(query, { limit: 8, cacheTtl: 30 });
-      console.log("TEMP_DISCOVERY_REGRESSION", JSON.stringify({
-        query,
-        intent: result.intent,
-        provider: result.provider,
-        precisionAnchors: result.precisionAnchors,
-        effectiveQueries: result.effectiveQueries,
-        results: (result.results || []).slice(0, 8).map((x) => ({
-          title: x.title,
-          url: x.url,
-          provider: x.provider,
-          relevance: x.relevance
-        }))
-      }));
-    } catch (error) {
-      console.error("TEMP_DISCOVERY_REGRESSION_FAILED", error?.message || error);
+    const queries = [
+      "Bank of Ghana policy rate latest decision October 2026",
+      "self-hosted open source web crawler for AI agents Playwright markdown GitHub",
+      "MongoDB Community mongot vector search documentation",
+      "OpenAI DevDay 2026 biggest announcements",
+      "Ghana cedi US dollar September 2026 reserves import cover Bank of Ghana",
+      "best open source alternatives to Tavily web search API for agents"
+    ];
+
+    for (const query of queries) {
+      try {
+        const result = await discoverWeb(query, { limit: 5, cacheTtl: 30 });
+        console.log("TEMP_RIGID_REGRESSION", JSON.stringify({
+          query,
+          intent: result.intent,
+          provider: result.provider,
+          anchors: result.anchors,
+          precisionAnchors: result.precisionAnchors,
+          strictPrecision: result.strictPrecision,
+          effectiveQueries: result.effectiveQueries,
+          attempts: result.attempts,
+          results: (result.results || []).slice(0, 5).map((x) => ({
+            title: x.title,
+            url: x.url,
+            snippet: x.snippet,
+            provider: x.provider,
+            relevance: x.relevance
+          }))
+        }));
+      } catch (error) {
+        console.error("TEMP_RIGID_REGRESSION_FAILED", JSON.stringify({
+          query,
+          error: error?.message || String(error)
+        }));
+      }
     }
   })();
 });
