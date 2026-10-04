@@ -78,6 +78,9 @@ export async function savePage(page, chunks, embeddings, embeddingModel) {
       $set: {
         documentId,
         url: page.url,
+        sourceUrl: page.sourceUrl || page.url,
+        contentSourceUrl: page.contentSourceUrl || page.sourceUrl || page.url,
+        extraction: page.extraction || "html",
         title: page.title || null,
         description: page.description || null,
         contentHash,
@@ -85,6 +88,9 @@ export async function savePage(page, chunks, embeddings, embeddingModel) {
         statusCode: page.statusCode,
         contentType: page.contentType,
         crawledAt
+      },
+      $addToSet: {
+        sourceUrls: page.sourceUrl || page.url
       },
       $setOnInsert: { createdAt: crawledAt }
     },
@@ -97,6 +103,7 @@ export async function savePage(page, chunks, embeddings, embeddingModel) {
       chunks.map((text, ordinal) => ({
         documentId,
         url: page.url,
+        sourceUrl: page.sourceUrl || page.url,
         title: page.title || null,
         text,
         ordinal,
@@ -198,7 +205,7 @@ export async function vectorSearchChunks(vector, options = {}) {
 export async function getDocument(url) {
   const db = await getDb();
   return db.collection("documents").findOne(
-    { url },
+    { $or: [{ url }, { sourceUrl: url }, { sourceUrls: url }] },
     {
       projection: {
         _id: 0,
@@ -206,6 +213,10 @@ export async function getDocument(url) {
         url: 1,
         title: 1,
         description: 1,
+        sourceUrl: 1,
+        sourceUrls: 1,
+        extraction: 1,
+        contentSourceUrl: 1,
         crawledAt: 1,
         wordCount: 1,
         contentHash: 1
