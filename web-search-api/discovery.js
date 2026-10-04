@@ -3,7 +3,7 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 21;
+const DISCOVERY_CACHE_VERSION = 22;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -989,6 +989,8 @@ export async function discoverWeb(query, options = {}) {
   const limit = Math.max(1, Math.min(Number(options.limit || 8), 20));
   const cacheTtl = Math.max(30, Math.min(Number(options.cacheTtl || 600), 3600));
   const analysis = analyzeQuery(q);
+  const maxMs = Math.max(5000, Math.min(Number(options.maxMs || 22000), 30000));
+  const deadline = Date.now() + maxMs;
 
   const cacheKey = sha256(JSON.stringify({
     cacheVersion: DISCOVERY_CACHE_VERSION,
@@ -1008,9 +1010,34 @@ export async function discoverWeb(query, options = {}) {
   const collected = [];
 
   for (const variant of analysis.variants) {
-    const result = await runVariant(variant, analysis, Math.max(limit, 10));
+    const remaining = deadline - Date.now();
+    if (remaining <= 500) {
+      attempts.push({ provider: "discovery-budget", query: variant, ok: false, error: "budget_exhausted" });
+      break;
+    }
+
+    const startedAt = Date.now();
+    const result = await boundedValue(
+      runVariant(variant, analysis, Math.max(limit, 10)),
+      Math.min(7000, remaining),
+      {
+        rows: [],
+        attempts: [{ provider: "variant-timeout", query: variant, ok: false, error: "timeout" }]
+      }
+    );
+
     attempts.push(...result.attempts);
     collected.push(...result.rows);
+
+    if (options.debug) {
+      console.log("DISCOVERY_DEBUG", JSON.stringify({
+        query: q,
+        variant,
+        durationMs: Date.now() - startedAt,
+        rowCount: result.rows.length,
+        attempts: result.attempts
+      }));
+    }
 
     const early = fuse(collected, analysis, limit);
     const strongStrict =
@@ -1030,8 +1057,20 @@ export async function discoverWeb(query, options = {}) {
     (analysis.intent === "technical_tutorial" || analysis.intent === "technical")
   ) {
     try {
-      const official = await discoverOfficialSitemap(analysis, Math.max(limit, 10));
-      attempts.push({ provider: "official-sitemap", query: analysis.brand, ok: official.length > 0 });
+      const remaining = deadline - Date.now();
+      const official = remaining > 500
+        ? await boundedValue(
+            discoverOfficialSitemap(analysis, Math.max(limit, 10)),
+            Math.min(6000, remaining),
+            []
+          )
+        : [];
+      attempts.push({
+        provider: "official-sitemap",
+        query: analysis.brand,
+        ok: official.length > 0,
+        error: remaining <= 500 ? "budget_exhausted" : undefined
+      });
       if (official.length) {
         collected.push(...official);
         results = fuse(collected, analysis, limit);
