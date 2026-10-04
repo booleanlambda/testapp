@@ -387,11 +387,7 @@ server.listen(port, "0.0.0.0", async () => {
 
   (async () => {
     const queries = [
-      "Bank of Ghana policy rate latest decision October 2026",
-      "self-hosted open source web crawler for AI agents Playwright markdown GitHub",
       "MongoDB Community mongot vector search documentation",
-      "OpenAI DevDay 2026 biggest announcements",
-      "Ghana cedi US dollar September 2026 reserves import cover Bank of Ghana",
       "best open source alternatives to Tavily web search API for agents"
     ];
 
