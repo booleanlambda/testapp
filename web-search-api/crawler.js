@@ -6,6 +6,10 @@ import { savePage } from "./storage.js";
 
 const USER_AGENT = "AAUWebSearchBot/0.2 (+https://web-search-api-m30a.onrender.com)";
 const MAX_BODY_BYTES = 2_500_000;
+const TRACKING_PARAMS = new Set([
+  "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+  "gclid", "fbclid", "mc_cid", "mc_eid"
+]);
 
 function isPrivateIp(address) {
   if (net.isIPv4(address)) {
@@ -101,7 +105,7 @@ export async function fetchSafe(rawUrl) {
       redirect: "manual",
       headers: {
         "user-agent": USER_AGENT,
-        accept: "text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.1",
+        accept: "text/html,application/xhtml+xml,text/markdown,text/plain;q=0.8,*/*;q=0.1",
         "accept-language": "en-US,en;q=0.8"
       },
       signal: AbortSignal.timeout(12000)
@@ -114,12 +118,15 @@ export async function fetchSafe(rawUrl) {
       continue;
     }
 
-    if (!response.ok) {
-      throw new Error(`http_${response.status}`);
-    }
+    if (!response.ok) throw new Error(`http_${response.status}`);
 
     const type = (response.headers.get("content-type") || "").toLowerCase();
-    if (!type.includes("text/html") && !type.includes("application/xhtml+xml") && !type.includes("text/plain")) {
+    if (
+      !type.includes("text/html") &&
+      !type.includes("application/xhtml+xml") &&
+      !type.includes("text/plain") &&
+      !type.includes("text/markdown")
+    ) {
       throw new Error("unsupported_content_type");
     }
 
@@ -146,11 +153,14 @@ function cleanText(value = "") {
     .trim();
 }
 
-function canonicalizeLink(href, base) {
+export function normalizeUrl(raw, base = undefined) {
   try {
-    const u = new URL(href, base);
+    const u = base ? new URL(raw, base) : new URL(raw);
     if (!["http:", "https:"].includes(u.protocol)) return null;
     u.hash = "";
+    for (const key of [...u.searchParams.keys()]) {
+      if (TRACKING_PARAMS.has(key.toLowerCase())) u.searchParams.delete(key);
+    }
     if (u.pathname !== "/" && u.pathname.endsWith("/")) {
       u.pathname = u.pathname.replace(/\/+$/, "");
     }
@@ -160,16 +170,50 @@ function canonicalizeLink(href, base) {
   }
 }
 
+function canonicalizeLink(href, base) {
+  return normalizeUrl(href, base);
+}
+
+function markdownCandidateUrls($, pageUrl, canonicalUrl, bodyText) {
+  const candidates = [];
+
+  $('link[rel~="alternate"][type="text/markdown"][href]').each((_, el) => {
+    const href = normalizeUrl($(el).attr("href"), pageUrl);
+    if (href) candidates.push(href);
+  });
+
+  $('a[href$=".md"]').each((_, el) => {
+    const href = normalizeUrl($(el).attr("href"), pageUrl);
+    if (href) candidates.push(href);
+  });
+
+  if (/markdown versions of all pages are available by appending \.md/i.test(bodyText)) {
+    try {
+      const u = new URL(canonicalUrl || pageUrl);
+      u.search = "";
+      u.hash = "";
+      u.pathname = u.pathname.replace(/\/+$/, "") + ".md";
+      candidates.push(u.toString());
+    } catch {}
+  }
+
+  return [...new Set(candidates)];
+}
+
 export function extractPage(html, url, contentType = "text/html") {
-  if (contentType.includes("text/plain")) {
+  if (contentType.includes("text/plain") || contentType.includes("text/markdown")) {
     const text = cleanText(html);
+    const firstHeading = text.match(/^#\s+(.+)$/m)?.[1]?.trim() || null;
     return {
-      url,
-      title: null,
+      url: normalizeUrl(url) || url,
+      sourceUrl: url,
+      title: firstHeading,
       description: null,
       text,
       wordCount: text ? text.split(/\s+/).length : 0,
-      links: []
+      links: [],
+      markdownUrls: [],
+      extraction: contentType.includes("text/markdown") ? "markdown" : "plain"
     };
   }
 
@@ -180,15 +224,35 @@ export function extractPage(html, url, contentType = "text/html") {
     cleanText($('meta[property="og:description"]').attr("content")) ||
     null;
 
+  const declaredCanonical =
+    $('link[rel="canonical"][href]').first().attr("href") ||
+    $('meta[property="og:url"]').first().attr("content") ||
+    null;
+  const canonicalUrl = normalizeUrl(declaredCanonical || url, url) || normalizeUrl(url) || url;
+
   const links = [];
   $("a[href]").each((_, el) => {
     const link = canonicalizeLink($(el).attr("href"), url);
     if (link) links.push(link);
   });
 
+  const bodyText = cleanText($("body").text());
+  const markdownUrls = markdownCandidateUrls($, url, canonicalUrl, bodyText);
+
   $("script,style,noscript,svg,canvas,form,iframe,template").remove();
 
-  const candidates = ["main", "article", '[role="main"]'];
+  const candidates = [
+    "article",
+    "main article",
+    '[role="main"] article',
+    "main",
+    '[role="main"]',
+    ".markdown-body",
+    ".theme-doc-markdown",
+    ".documentation-content",
+    ".docs-content"
+  ];
+
   let root = null;
   for (const selector of candidates) {
     const node = $(selector).first();
@@ -199,10 +263,14 @@ export function extractPage(html, url, contentType = "text/html") {
   }
   if (!root) root = $("body");
 
-  root.find("nav,footer,aside").remove();
+  root.find(
+    "nav,footer,aside,header,[role=navigation],[aria-label*=breadcrumb i]," +
+    "[class*=sidebar i],[class*=toc i],[class*=navigation i],[class*=footer i]," +
+    "button,form"
+  ).remove();
 
   const blocks = [];
-  root.find("h1,h2,h3,h4,p,li,pre,blockquote,td,th").each((_, el) => {
+  root.find("h1,h2,h3,h4,p,li,pre,code,blockquote,td,th,dd,dt").each((_, el) => {
     const t = cleanText($(el).text());
     if (t.length >= 2) blocks.push(t);
   });
@@ -211,13 +279,58 @@ export function extractPage(html, url, contentType = "text/html") {
   if (text.length < 200) text = cleanText(root.text());
 
   return {
-    url,
+    url: canonicalUrl,
+    sourceUrl: normalizeUrl(url) || url,
     title,
     description,
     text,
     wordCount: text ? text.split(/\s+/).length : 0,
-    links: [...new Set(links)]
+    links: [...new Set(links)],
+    markdownUrls,
+    extraction: "html"
   };
+}
+
+function looksLikeThinShell(page) {
+  const text = String(page?.text || "");
+  if (text.length < 500) return true;
+  const navSignals = [
+    "docs menu",
+    "copy page",
+    "rate this page",
+    "ask mongodb ai",
+    "next",
+    "previous"
+  ];
+  const lowered = text.toLowerCase();
+  const signalCount = navSignals.filter((x) => lowered.includes(x)).length;
+  return signalCount >= 3 && text.length < 1800;
+}
+
+async function enrichWithMarkdown(page) {
+  if (!page?.markdownUrls?.length) return page;
+  if (!looksLikeThinShell(page) && page.text.length >= 1500) return page;
+
+  for (const markdownUrl of page.markdownUrls.slice(0, 3)) {
+    try {
+      const fetched = await fetchSafe(markdownUrl);
+      const markdownPage = extractPage(fetched.body, fetched.url, fetched.contentType);
+      if (
+        markdownPage.text.length >= 500 &&
+        markdownPage.text.length > page.text.length * 1.25
+      ) {
+        return {
+          ...page,
+          text: markdownPage.text,
+          wordCount: markdownPage.wordCount,
+          extraction: markdownPage.extraction,
+          contentSourceUrl: fetched.url
+        };
+      }
+    } catch {}
+  }
+
+  return page;
 }
 
 export function chunkText(text, target = 1200, overlap = 180) {
@@ -298,9 +411,7 @@ async function allowedByRobots(rawUrl, cache) {
 }
 
 function normalizeStart(raw) {
-  const u = new URL(raw);
-  u.hash = "";
-  return u.toString();
+  return normalizeUrl(raw) || raw;
 }
 
 export async function crawlSite(startUrl, options = {}) {
@@ -313,6 +424,7 @@ export async function crawlSite(startUrl, options = {}) {
   const origin = new URL(start).origin;
   const pending = [{ url: start, depth: 0 }];
   const seen = new Set();
+  const canonicalSeen = new Set();
   const robotsCache = new Map();
   const pages = [];
   const failures = [];
@@ -329,7 +441,15 @@ export async function crawlSite(startUrl, options = {}) {
       }
 
       const fetched = await fetchSafe(item.url);
-      const page = extractPage(fetched.body, fetched.url, fetched.contentType);
+      let page = extractPage(fetched.body, fetched.url, fetched.contentType);
+      page = await enrichWithMarkdown(page);
+
+      if (canonicalSeen.has(page.url)) {
+        failures.push({ url: item.url, canonicalUrl: page.url, reason: "duplicate_canonical" });
+        continue;
+      }
+      canonicalSeen.add(page.url);
+
       if (page.text.length < 80) {
         failures.push({ url: item.url, reason: "insufficient_text" });
         continue;
@@ -350,11 +470,14 @@ export async function crawlSite(startUrl, options = {}) {
 
       pages.push({
         url: page.url,
+        sourceUrl: page.sourceUrl,
         title: page.title,
         wordCount: page.wordCount,
         chunkCount: saved.chunkCount,
         documentId: saved.documentId,
-        embeddingModel: model
+        embeddingModel: model,
+        extraction: page.extraction,
+        contentSourceUrl: page.contentSourceUrl || null
       });
 
       if (item.depth < maxDepth) {
