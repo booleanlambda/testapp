@@ -149,7 +149,12 @@ export function analyzeQuery(query) {
     const focused = `${precise} ${quoted} ${suffix}`.replace(/\s+/g, " ").trim();
 
     if (brand && precisionAnchors.length >= 2) {
-      variants[0] = `site:${brand}.com ${precise} ${quoted} official documentation`.replace(/\s+/g, " ").trim();
+      const brandedPrecise = precisionAnchors
+        .filter((p) => p !== brand)
+        .slice(0, 2)
+        .map((p) => `"${p}"`)
+        .join(" ");
+      variants[0] = `site:${brand}.com/docs ${brandedPrecise} ${quoted} documentation`.replace(/\s+/g, " ").trim();
       variants.push(q);
       variants.push(focused);
     } else {
