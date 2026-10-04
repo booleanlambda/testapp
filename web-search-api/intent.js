@@ -45,15 +45,27 @@ function currentOrRecentYear(q) {
 
 function inferBrand(q, content) {
   const raws = rawWords(q);
+  const nonBrandTechnicalTokens = new Set([
+    "managedfields",
+    "managedfield",
+    "serverside",
+    "clientside",
+    "server-side",
+    "client-side"
+  ]);
+
   for (const token of raws) {
-    // Hyphenated title-case technical phrases (for example "Server-Side")
-    // are descriptors, not brands. Avoid generating bogus site:<phrase>.com rewrites.
+    const lowerToken = token.toLowerCase();
+
+    // Mixed/title-case technical identifiers and hyphenated descriptors are not brands.
+    // This prevents bogus rewrites such as site:managedfields.com or site:server-side.com.
     if (
       !token.includes("-") &&
+      !nonBrandTechnicalTokens.has(lowerToken) &&
       /[a-z][A-Z]|[A-Z].*[A-Z]/.test(token) &&
       token.length >= 5
     ) {
-      return token.toLowerCase();
+      return lowerToken;
     }
   }
 
