@@ -386,37 +386,73 @@ server.listen(port, "0.0.0.0", async () => {
   console.log("startup diagnostics", JSON.stringify(diagnostics));
 
   (async () => {
-    const queries = [
-      "MongoDB Community mongot vector search documentation",
-      "best open source alternatives to Tavily web search API for agents"
+    const tests = [
+      {
+        name: "mongodb_vector_docs",
+        query: "MongoDB Community mongot vector search documentation",
+        validate(result) {
+          return (result.results || []).some((row) => {
+            const hay = `${row.title || ""} ${row.snippet || ""}`.toLowerCase();
+            return /mongodb\\.com/i.test(row.url || "") && /mongot|vector search/.test(hay);
+          });
+        }
+      },
+      {
+        name: "tavily_open_source_alternatives",
+        query: "best open source alternatives to Tavily web search API for agents",
+        validate(result) {
+          const verified = (result.results || []).filter((row) =>
+            row.provider === "github-repositories" &&
+            row.verifiedComparison === true &&
+            row.openSourceVerified === true &&
+            row.categoryMatched === true
+          );
+          return result.intent === "technical_comparison" && verified.length >= 3;
+        }
+      }
     ];
 
-    for (const query of queries) {
+    await Promise.all(tests.map(async (test) => {
+      const startedAt = Date.now();
       try {
-        const result = await discoverWeb(query, { limit: 5, cacheTtl: 30 });
-        console.log("TEMP_RIGID_REGRESSION", JSON.stringify({
-          query,
+        const result = await withTimeout(
+          discoverWeb(test.query, { limit: 5, cacheTtl: 30 }),
+          30000
+        );
+        const passed = Boolean(test.validate(result));
+        const payload = {
+          name: test.name,
+          query: test.query,
+          passed,
+          durationMs: Date.now() - startedAt,
           intent: result.intent,
           provider: result.provider,
-          anchors: result.anchors,
-          precisionAnchors: result.precisionAnchors,
-          strictPrecision: result.strictPrecision,
-          effectiveQueries: result.effectiveQueries,
           attempts: result.attempts,
           results: (result.results || []).slice(0, 5).map((x) => ({
             title: x.title,
             url: x.url,
-            snippet: x.snippet,
             provider: x.provider,
-            relevance: x.relevance
+            relevance: x.relevance,
+            verifiedComparison: x.verifiedComparison || false,
+            openSourceVerified: x.openSourceVerified || false,
+            categoryMatched: x.categoryMatched || false
           }))
-        }));
+        };
+
+        if (passed) {
+          console.log("RIGID_REGRESSION_PASS", JSON.stringify(payload));
+        } else {
+          console.error("RIGID_REGRESSION_FAIL", JSON.stringify(payload));
+        }
       } catch (error) {
-        console.error("TEMP_RIGID_REGRESSION_FAILED", JSON.stringify({
-          query,
+        console.error("RIGID_REGRESSION_FAIL", JSON.stringify({
+          name: test.name,
+          query: test.query,
+          passed: false,
+          durationMs: Date.now() - startedAt,
           error: error?.message || String(error)
         }));
       }
-    }
+    }));
   })();
 });
