@@ -167,13 +167,29 @@ export function analyzeQuery(query) {
       variants.push(`${base} announcements developments ${year}`);
     }
   } else if (intent === "technical_tutorial" || intent === "technical") {
-    const precise = precisionAnchors.slice(0, 3).map((p) => `"${p}"`).join(" ");
-    const quoted = phrases.filter((p) => p !== "agent").slice(0, 2).map((p) => `"${p}"`).join(" ");
+    const primaryEntity = anchors[0] || precisionAnchors[0] || "";
+    const distinctive = precisionAnchors.slice(0, 4);
+    const phraseTerms = phrases
+      .filter((p) => p !== "agent")
+      .slice(0, 2)
+      .join(" ");
     const suffix = intent === "technical_tutorial"
       ? "official documentation tutorial implementation"
-      : "developer documentation open source implementation";
+      : "documentation technical implementation";
 
-    const focused = `${precise} ${quoted} ${suffix}`.replace(/\s+/g, " ").trim();
+    const focused = [
+      primaryEntity,
+      ...distinctive,
+      phraseTerms,
+      suffix
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+
+    const focusedExact = [
+      distinctive[0] ? `"${distinctive[0]}"` : "",
+      primaryEntity,
+      ...distinctive.slice(1, 4),
+      "documentation"
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 
     if (brand && precisionAnchors.length >= 2) {
       const brandedPrecise = precisionAnchors
@@ -186,6 +202,7 @@ export function analyzeQuery(query) {
       variants.push(focused);
     } else {
       variants.push(focused);
+      if (focusedExact && focusedExact !== focused) variants.push(focusedExact);
       if (/\bagents?\b/i.test(q) && /\bcrawler|search|retrieval|rag\b/i.test(q)) {
         variants.push(`"web crawler" agents retrieval RAG search open source`);
       }
