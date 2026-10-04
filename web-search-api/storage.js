@@ -111,11 +111,15 @@ export async function savePage(page, chunks, embeddings, embeddingModel) {
   return { documentId, contentHash, chunkCount: chunks.length };
 }
 
-export async function recentChunks(limit = 1500) {
+export async function recentChunks(limit = 1500, urls = null) {
   const db = await getDb();
+  const filter = { embedding: { $type: "array" } };
+  if (Array.isArray(urls) && urls.length) {
+    filter.url = { $in: urls };
+  }
   return db.collection("chunks")
     .find(
-      { embedding: { $type: "array" } },
+      filter,
       {
         projection: {
           _id: 0,
