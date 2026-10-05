@@ -1535,10 +1535,39 @@ export async function discoverWeb(query, options = {}) {
     analysis.sourcePolicy === "primary" &&
     (analysis.officialDomains || []).length > 0;
 
+  let structuredPrimaryReady = false;
+  let officialPrimaryAttempted = false;
+
+  if (structuredPrimary) {
+    officialPrimaryAttempted = true;
+    const remaining = deadline - Date.now();
+    const official = remaining > 500
+      ? await boundedValue(
+          discoverOfficialSitemap(analysis, Math.max(limit, 10)),
+          Math.min(6500, remaining),
+          []
+        )
+      : [];
+
+    attempts.push({
+      provider: official[0]?.provider || "official-sitemap",
+      query: analysis.officialDomains?.[0] || analysis.brand,
+      ok: official.length > 0,
+      error: remaining <= 500 ? "budget_exhausted" : undefined
+    });
+
+    if (official.length) {
+      collected.push(...official);
+      structuredPrimaryReady = fuse(collected, analysis, limit).length > 0;
+    }
+  }
+
   const variantsToRun =
-    analysis.intent === "technical_comparison" || structuredPrimary
-      ? analysis.variants.slice(0, 1)
-      : analysis.variants;
+    structuredPrimary && structuredPrimaryReady
+      ? []
+      : analysis.intent === "technical_comparison" || structuredPrimary
+        ? analysis.variants.slice(0, 1)
+        : analysis.variants;
 
   for (const variant of variantsToRun) {
     const remaining = deadline - Date.now();
@@ -1589,7 +1618,7 @@ export async function discoverWeb(query, options = {}) {
   if (
     results.length < Math.min(limit, 3) &&
     (
-      structuredPrimary ||
+      (structuredPrimary && !officialPrimaryAttempted) ||
       (
         analysis.strictPrecision &&
         analysis.brand &&
