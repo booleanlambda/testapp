@@ -96,7 +96,7 @@ export function analyzeQuery(query) {
 
   const news = explicitNews || temporalFinance || temporalEvent;
   const tutorial = /\b(tutorial|guide|how to|example|examples|docs|documentation|learn|setup|install|implementation)\b/i.test(q);
-  const technical = /\b(api|sdk|code|developer|programming|crawler|scraper|vector|embedding|database|agent|agents|rag|llm|github|npm|python|javascript|mongodb|mongot|playwright|pgvector|postgres|postgresql|hnsw|ivfflat|ef_construction|kubernetes|k8s|managedfields|managed-fields|server-side|serverside)\b/i.test(q) || /server[- ]side\s+apply/i.test(q);
+  const technical = /\b(api|sdk|code|developer|programming|crawler|scraper|vector|embedding|database|agent|agents|rag|llm|github|npm|python|javascript|node|node\.js|nodejs|process\.nexttick|queuemicrotask|setimmediate|settimeout|setinterval|event loop|microtask|macrotask|libuv|async_hooks|worker_threads|mongodb|mongot|playwright|pgvector|postgres|postgresql|hnsw|ivfflat|ef_construction|kubernetes|k8s|managedfields|managed-fields|server-side|serverside)\b/i.test(q) || /server[- ]side\s+apply/i.test(q);
   const comparison = /\b(alternative|alternatives|compare|comparison|versus|\bvs\.?\b|replacement|competitor|competitors)\b/i.test(q);
   const commercial = /\b(price|pricing|cost|buy|product|vendor|provider)\b/i.test(q);
 
@@ -126,12 +126,13 @@ export function analyzeQuery(query) {
     !/^20\d{2}$/.test(t)
   ));
 
-  const systemTerms = /^(postgres|postgresql|mongodb|mongot|pgvector|hnsw|ivfflat|checkpoint|checkpoints|wal|wal_compression|full-page|hint|bits|replication|vacuum|btree|lsn|mvcc|redo|undo|kubernetes|k8s|server-side|managedfields|managed-fields|conflict|conflicts|force)$/;
+  const systemTerms = /^(node|node\.js|nodejs|process\.nexttick|queuemicrotask|setimmediate|settimeout|setinterval|event|loop|microtask|microtasks|macrotask|macrotasks|libuv|async_hooks|worker_threads|postgres|postgresql|mongodb|mongot|pgvector|hnsw|ivfflat|checkpoint|checkpoints|wal|wal_compression|full-page|hint|bits|replication|vacuum|btree|lsn|mvcc|redo|undo|kubernetes|k8s|server-side|managedfields|managed-fields|conflict|conflicts|force)$/;
 
   const precisionAnchors = precisionCandidates
     .map((token, index) => {
       let priority = 0;
       if (token.includes("_")) priority += 12;
+      if (token.includes(".")) priority += 10;
       if (token.includes("-")) priority += 7;
       if (systemTerms.test(token)) priority += 9;
       if (token.length >= 9) priority += 3;
@@ -156,6 +157,13 @@ export function analyzeQuery(query) {
   if (/hint\s+bits?/.test(lower)) phrases.push("hint bits");
   if (/wal_compression|wal\s+compression/.test(lower)) phrases.push("wal_compression");
   if (/checkpoints?/.test(lower)) phrases.push("checkpoint");
+  if (/node(?:\.js)?|nodejs/.test(lower)) phrases.push("node.js");
+  if (/process\.nexttick/.test(lower)) phrases.push("process.nexttick");
+  if (/queuemicrotask/.test(lower)) phrases.push("queuemicrotask");
+  if (/setimmediate/.test(lower)) phrases.push("setimmediate");
+  if (/settimeout/.test(lower)) phrases.push("settimeout");
+  if (/event\s+loop/.test(lower)) phrases.push("event loop");
+  if (/microtasks?/.test(lower)) phrases.push("microtask");
   if (/ai\s+agent/.test(lower)) phrases.push("ai agent");
   if (/ghana\s+cedi/.test(lower)) phrases.push("ghana cedi");
   if (/bank\s+of\s+ghana/.test(lower)) phrases.push("bank of ghana");
