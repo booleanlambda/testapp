@@ -66,12 +66,15 @@ function uniqLower(values, max = 16) {
 function queryContextPhrase(query, anchors = []) {
   const lower = String(query || "").toLowerCase().replace(/[^a-z0-9._-]+/g, " ").trim();
   const ordered = (anchors || []).map((value) => String(value || "").toLowerCase()).filter(Boolean);
+  const localityCue = /^(north|south|east|west|northeast|northwest|southeast|southwest|downtown|uptown|midtown|central|lower|upper)$/;
 
-  for (let width = Math.min(3, ordered.length); width >= 2; width -= 1) {
-    for (let i = 0; i <= ordered.length - width; i += 1) {
-      const phrase = ordered.slice(i, i + width).join(" ");
-      if (phrase.length >= 8 && lower.includes(phrase)) return phrase;
-    }
+  // Exact phrase enforcement is reserved for strong locality constructions
+  // such as "South Philadelphia". Ordinary topical sequences such as
+  // "movies opening October" should remain token-grounded rather than exact.
+  for (let i = 0; i < ordered.length - 1; i += 1) {
+    if (!localityCue.test(ordered[i])) continue;
+    const phrase = [ordered[i], ordered[i + 1]].join(" ");
+    if (phrase.length >= 8 && lower.includes(phrase)) return phrase;
   }
 
   return null;
