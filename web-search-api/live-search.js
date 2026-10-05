@@ -1,6 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { discoverWeb } from "./discovery.js";
-import { crawlSite } from "./crawler.js";
-import { getDocument } from "./storage.js";
+import { crawlSite, fetchPageFast } from "./crawler.js";
+import {
+  createJob,
+  getDiscoveryCache,
+  getDocument,
+  setDiscoveryCache,
+  sha256
+} from "./storage.js";
+import { publishCrawlJob } from "./queue.js";
 import { searchIndex } from "./search.js";
 
 function isFresh(document, freshSeconds) {
@@ -60,6 +68,224 @@ function evidenceCoverage(required, rows) {
     missing,
     complete: missing.length === 0
   };
+}
+
+function fastCacheKey(url) {
+  return sha256(`fast-page:v1:${url}`);
+}
+
+async function fetchFastCandidate(row, freshSeconds, controller) {
+  const key = fastCacheKey(row.url);
+  try {
+    const cached = await getDiscoveryCache(key);
+    if (cached?.text && cached?.url) {
+      return {
+        row,
+        page: cached,
+        status: "fast-cache"
+      };
+    }
+  } catch {}
+
+  try {
+    const page = await fetchPageFast(row.url, {
+      signal: controller.signal,
+      timeoutMs: 5000,
+      respectRobots: true,
+      enrichMarkdown: true
+    });
+
+    void setDiscoveryCache(
+      key,
+      {
+        url: page.url,
+        sourceUrl: page.sourceUrl,
+        title: page.title,
+        description: page.description,
+        text: String(page.text || "").slice(0, 180000),
+        wordCount: page.wordCount,
+        extraction: page.extraction,
+        cachedAt: new Date().toISOString()
+      },
+      Math.max(900, Math.min(Number(freshSeconds || 1800), 21600))
+    ).catch(() => {});
+
+    return {
+      row,
+      page,
+      status: "fast-fetched"
+    };
+  } catch (error) {
+    return {
+      row,
+      page: null,
+      status: controller.signal.aborted ? "aborted" : "failed",
+      error: String(error?.message || "fast_fetch_failed").slice(0, 240)
+    };
+  }
+}
+
+function fastEvidenceRows(pages) {
+  return pages.map((page) => ({
+    title: page.title,
+    url: page.url,
+    content: page.text
+  }));
+}
+
+function evidencePassage(text, terms = [], concepts = [], maxChars = 2200) {
+  const source = String(text || "");
+  if (source.length <= maxChars) return source;
+
+  const needles = [...new Set([...terms, ...concepts])]
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+
+  const lower = source.toLowerCase();
+  const hits = needles
+    .map((needle) => lower.indexOf(needle.toLowerCase()))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b);
+
+  if (!hits.length) return source.slice(0, maxChars);
+
+  const windows = [];
+  for (const hit of hits.slice(0, 4)) {
+    const start = Math.max(0, hit - 280);
+    const end = Math.min(source.length, hit + 620);
+    windows.push(source.slice(start, end));
+  }
+
+  const merged = windows.join("\n…\n");
+  return merged.length <= maxChars ? merged : merged.slice(0, maxChars);
+}
+
+function fastResultScore(page, requiredEvidence, concepts) {
+  const haystack = normalizeEvidenceText(`${page.title || ""} ${page.text || ""} ${page.url || ""}`);
+  let score = 0;
+  for (const term of requiredEvidence || []) {
+    const needle = normalizeEvidenceText(term);
+    if (needle && haystack.includes(needle)) score += 8;
+  }
+  for (const term of concepts || []) {
+    const needle = normalizeEvidenceText(term);
+    if (needle && haystack.includes(needle)) score += 3;
+  }
+  return score;
+}
+
+function fastResults(pages, agentRequest, limit) {
+  return pages
+    .map((page) => ({
+      title: page.title || null,
+      url: page.url,
+      content: evidencePassage(
+        page.text,
+        agentRequest?.requiredEvidence || [],
+        agentRequest?.concepts || []
+      ),
+      score: fastResultScore(
+        page,
+        agentRequest?.requiredEvidence || [],
+        agentRequest?.concepts || []
+      ),
+      semanticScore: null,
+      lexicalScore: null,
+      chunk: null,
+      crawledAt: null,
+      fallback: false,
+      fastPath: true
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+async function fetchUntilEvidenceFast({
+  rows,
+  freshSeconds,
+  requiredEvidence,
+  concepts,
+  maxTotal,
+  concurrency = 2
+}) {
+  const pages = [];
+  const activity = [];
+  const active = new Map();
+  let nextIndex = 0;
+  let idSeq = 0;
+  let evidence = evidenceCoverage(requiredEvidence, []);
+
+  const launch = (row) => {
+    const id = ++idSeq;
+    const controller = new AbortController();
+    const promise = fetchFastCandidate(row, freshSeconds, controller)
+      .then((result) => ({ id, result }));
+    active.set(id, { promise, controller });
+  };
+
+  while (nextIndex < rows.length && active.size < Math.min(concurrency, maxTotal)) {
+    launch(rows[nextIndex++]);
+  }
+
+  while (active.size) {
+    const outcome = await Promise.race([...active.values()].map((entry) => entry.promise));
+    active.delete(outcome.id);
+
+    const { result } = outcome;
+    activity.push({
+      url: result.row?.url || null,
+      canonicalUrl: result.page?.url || result.row?.url || null,
+      status: result.status,
+      error: result.error || null
+    });
+
+    if (result.page) {
+      pages.push(result.page);
+      evidence = evidenceCoverage(requiredEvidence, fastEvidenceRows(pages));
+    }
+
+    if (evidence.complete || activity.length >= maxTotal) {
+      for (const entry of active.values()) entry.controller.abort();
+      await Promise.allSettled([...active.values()].map((entry) => entry.promise));
+      active.clear();
+      break;
+    }
+
+    while (
+      nextIndex < rows.length &&
+      active.size < Math.min(concurrency, maxTotal - activity.length)
+    ) {
+      launch(rows[nextIndex++]);
+    }
+  }
+
+  return {
+    pages,
+    activity,
+    evidence,
+    processed: activity.length
+  };
+}
+
+function enqueueIndexing(urls) {
+  const unique = [...new Set((urls || []).filter(Boolean))].slice(0, 4);
+  if (!unique.length) return;
+
+  queueMicrotask(() => {
+    void Promise.allSettled(
+      unique.map(async (url) => {
+        const jobId = randomUUID();
+        const options = {
+          maxPages: 1,
+          depth: 0,
+          sameOrigin: true,
+          respectRobots: true
+        };
+        await createJob({ jobId, url, options });
+        await publishCrawlJob({ jobId, url, options });
+      })
+    );
+  });
 }
 
 async function mapLimit(items, limit, worker) {
@@ -267,8 +493,42 @@ export async function liveSearch(query, options = {}) {
   let crawlActivity;
   let ranked;
   let evidence;
+  let fastPathUsed = false;
+  let fastPages = [];
 
   if (options.agentRequest && requiredEvidence.length) {
+    const fastPass = await fetchUntilEvidenceFast({
+      rows: selected,
+      freshSeconds,
+      requiredEvidence,
+      concepts: options.agentRequest.concepts || [],
+      maxTotal: maxCrawl,
+      concurrency: 2
+    });
+
+    fastPages = fastPass.pages;
+    crawlActivity = fastPass.activity;
+    evidence = fastPass.evidence;
+    fastPathUsed = fastPages.length > 0;
+
+    if (fastPathUsed) {
+      ranked = {
+        query: q,
+        embeddingModel: null,
+        candidateCount: fastPages.length,
+        results: fastResults(fastPages, options.agentRequest, limit)
+      };
+
+      enqueueIndexing(fastPages.map((page) => page.url));
+    } else {
+      ranked = {
+        query: q,
+        embeddingModel: null,
+        candidateCount: 0,
+        results: []
+      };
+    }
+  } else if (!fastPathUsed && options.agentRequest && requiredEvidence.length) {
     const firstPass = await crawlUntilEvidence({
       rows: selected,
       freshSeconds,
@@ -342,33 +602,71 @@ export async function liveSearch(query, options = {}) {
 
       const retrySelected = retryEligible.slice(0, remainingCrawl);
       const missingBefore = [...evidence.missing];
-      const retryPass = await crawlUntilEvidence({
-        rows: retrySelected,
-        freshSeconds,
-        query: q,
-        activity: crawlActivity,
-        maxTotal: maxCrawl,
-        requiredEvidence: options.agentRequest.requiredEvidence || [],
-        limit,
-        perDocument: 3
-      });
 
-      crawlActivity = retryPass.activity;
-      ranked = retryPass.ranked;
-      evidence = retryPass.evidence;
+      if (options.agentRequest) {
+        const retryPass = await fetchUntilEvidenceFast({
+          rows: retrySelected,
+          freshSeconds,
+          requiredEvidence: options.agentRequest.requiredEvidence || [],
+          concepts: options.agentRequest.concepts || [],
+          maxTotal: remainingCrawl,
+          concurrency: 2
+        });
+
+        crawlActivity = [...crawlActivity, ...retryPass.activity];
+        fastPages = [...fastPages, ...retryPass.pages];
+        evidence = evidenceCoverage(
+          options.agentRequest.requiredEvidence || [],
+          fastEvidenceRows(fastPages)
+        );
+        ranked = {
+          query: q,
+          embeddingModel: null,
+          candidateCount: fastPages.length,
+          results: fastResults(fastPages, options.agentRequest, limit)
+        };
+        enqueueIndexing(retryPass.pages.map((page) => page.url));
+
+        evidenceRetry = {
+          attempted: true,
+          query: retryQuery,
+          missingBefore,
+          discovered: retryDiscovery.results.length,
+          attempts: retryDiscovery.attempts || [],
+          crawled: retryPass.processed,
+          completeAfter: evidence.complete,
+          stoppedEarly: evidence.complete && retryPass.processed < retrySelected.length
+        };
+      } else {
+        const retryPass = await crawlUntilEvidence({
+          rows: retrySelected,
+          freshSeconds,
+          query: q,
+          activity: crawlActivity,
+          maxTotal: maxCrawl,
+          requiredEvidence: options.agentRequest.requiredEvidence || [],
+          limit,
+          perDocument: 3
+        });
+
+        crawlActivity = retryPass.activity;
+        ranked = retryPass.ranked;
+        evidence = retryPass.evidence;
+
+        evidenceRetry = {
+          attempted: true,
+          query: retryQuery,
+          missingBefore,
+          discovered: retryDiscovery.results.length,
+          attempts: retryDiscovery.attempts || [],
+          crawled: retryPass.processed,
+          completeAfter: evidence.complete,
+          stoppedEarly: evidence.complete && retryPass.processed < retrySelected.length
+        };
+      }
+
       allDiscoveryResults = [...allDiscoveryResults, ...retryEligible];
       candidateUrls = successfulCandidateUrls(crawlActivity);
-
-      evidenceRetry = {
-        attempted: true,
-        query: retryQuery,
-        missingBefore,
-        discovered: retryDiscovery.results.length,
-        attempts: retryDiscovery.attempts || [],
-        crawled: retryPass.processed,
-        completeAfter: evidence.complete,
-        stoppedEarly: evidence.complete && retryPass.processed < retrySelected.length
-      };
     } catch (error) {
       evidenceRetry = {
         attempted: true,
@@ -430,9 +728,17 @@ export async function liveSearch(query, options = {}) {
       attempted: crawlActivity.length,
       indexed: crawlActivity.filter((x) => x?.status === "indexed").length,
       reused: crawlActivity.filter((x) => x?.status === "reused").length,
+      fastFetched: crawlActivity.filter((x) => x?.status === "fast-fetched").length,
+      fastCache: crawlActivity.filter((x) => x?.status === "fast-cache").length,
       failed: crawlActivity.filter((x) => x?.status === "failed").length,
       activity: crawlActivity
     },
+    fastPath: fastPathUsed ? {
+      used: true,
+      embeddingBlockedResponse: false,
+      pagesFetched: crawlActivity.filter((x) => x?.status === "fast-fetched").length,
+      pagesFromCache: crawlActivity.filter((x) => x?.status === "fast-cache").length
+    } : { used: false },
     embeddingModel: ranked.embeddingModel,
     evidence,
     results: combinedResults
