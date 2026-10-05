@@ -386,6 +386,78 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+async function runStructuredLatencyProbe() {
+  const startedAt = Date.now();
+  const body = {
+    protocol: AGENT_SEARCH_PROTOCOL,
+    query: "In Python asyncio, what happens when one task inside a TaskGroup fails, how are the remaining tasks cancelled, and how are multiple failures propagated with ExceptionGroup?",
+    intent: "technical",
+    goal: "explain",
+    entities: ["Python", "asyncio"],
+    concepts: ["TaskGroup", "task cancellation", "ExceptionGroup", "multiple task failures"],
+    source_policy: "primary",
+    preferred_domains: ["docs.python.org"],
+    required_evidence: ["TaskGroup", "cancel", "ExceptionGroup"],
+    depth: "deep",
+    max_results: 6,
+    crawl_budget: 4
+  };
+  const structured = parseAgentSearchRequest(body);
+
+  try {
+    const result = await withTimeout(
+      liveSearch(structured.request.query, {
+        limit: structured.request.limit,
+        maxDiscover: structured.request.maxDiscover,
+        maxCrawl: structured.request.maxCrawl,
+        freshSeconds: 60,
+        analysis: structured.analysis,
+        agentRequest: structured.request
+      }),
+      20000
+    );
+
+    const rankedRows = (result.results || []).filter((row) => row.fallback !== true);
+    const checks = {
+      discovered: Number(result.discovery?.resultCount || 0) > 0,
+      structuredPlanner: result.discovery?.planner?.provider === "agent-structured",
+      primaryPythonSource: rankedRows.some((row) => {
+        try {
+          return /(^|\.)docs\.python\.org$/i.test(new URL(row.url || "").hostname);
+        } catch {
+          return false;
+        }
+      }),
+      fastPath: result.fastPath?.used === true,
+      embeddingOffCriticalPath: result.embeddingModel == null,
+      evidenceComplete: result.evidence?.complete === true
+    };
+    const passed = Object.values(checks).every(Boolean);
+
+    console[passed ? "log" : "error"](
+      passed ? "LATENCY_PROBE_PASS" : "LATENCY_PROBE_FAIL",
+      JSON.stringify({
+        name: "structured_cold_latency_probe",
+        passed,
+        durationMs: Date.now() - startedAt,
+        discovery: result.discovery,
+        crawl: result.crawl,
+        fastPath: result.fastPath,
+        evidence: result.evidence,
+        checks,
+        urls: rankedRows.map((row) => row.url)
+      })
+    );
+  } catch (error) {
+    console.error("LATENCY_PROBE_FAIL", JSON.stringify({
+      name: "structured_cold_latency_probe",
+      passed: false,
+      durationMs: Date.now() - startedAt,
+      error: error?.message || String(error)
+    }));
+  }
+}
+
 server.listen(port, "0.0.0.0", async () => {
   console.log(`web-search-api v0.5.1 listening on ${port}`);
 
@@ -406,6 +478,20 @@ server.listen(port, "0.0.0.0", async () => {
   const diagnostics = await runDiagnostics();
   console.log("startup diagnostics", JSON.stringify(diagnostics));
 
+  const runLatencyProbe = process.env.RUN_STARTUP_LATENCY_PROBE === "1";
+  const runFullRegressions = process.env.RUN_STARTUP_REGRESSIONS === "1";
+
+  if (runLatencyProbe) {
+    void runStructuredLatencyProbe();
+  }
+
+  if (!runFullRegressions) {
+    console.log("startup regressions disabled", JSON.stringify({
+      latencyProbe: runLatencyProbe,
+      fullRegressions: false
+    }));
+    return;
+  }
 
 
   (async () => {
