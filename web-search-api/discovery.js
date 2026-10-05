@@ -1205,6 +1205,25 @@ async function discoverOfficialSitemap(analysis, limit) {
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.min(Math.max(limit, 5), 6));
 
+  const structuredPrimary =
+    analysis.planner?.provider === "agent-structured" &&
+    analysis.sourcePolicy === "primary";
+
+  // Structured agent searches already have an explicit source policy and
+  // post-crawl evidence validation. Return the best sitemap URLs immediately
+  // instead of spending the discovery budget fetching those pages twice.
+  if (structuredPrimary) {
+    return candidates.map((row, index) => ({
+      title: `Official ${sourceLabel} candidate`,
+      url: row.url,
+      snippet: `Primary-source candidate selected from ${sourceLabel} sitemap for structured agent search.`,
+      publishedAt: null,
+      provider: "official-sitemap",
+      rank: index + 1,
+      queryEvidence: []
+    }));
+  }
+
   const enriched = await Promise.all(candidates.map(async (row, index) => {
     try {
       const html = await fetchText(row.url, 4000);
