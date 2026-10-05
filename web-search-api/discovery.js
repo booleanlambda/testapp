@@ -1117,13 +1117,23 @@ async function fetchText(url, ms = 12000) {
 }
 
 async function discoverOfficialSitemap(analysis, limit) {
-  if (!analysis.brand) return [];
+  const preferredDomains = Array.isArray(analysis.officialDomains)
+    ? analysis.officialDomains.map((x) => String(x || "").toLowerCase().replace(/^www\./, "")).filter(Boolean)
+    : [];
 
-  const hosts = [
-    `https://www.${analysis.brand}.com`,
-    `https://${analysis.brand}.com`
-  ];
+  if (!analysis.brand && !preferredDomains.length) return [];
 
+  const hosts = preferredDomains.length
+    ? [...new Set(preferredDomains.flatMap((domain) => [
+        `https://${domain}`,
+        `https://www.${domain}`
+      ]))]
+    : [
+        `https://www.${analysis.brand}.com`,
+        `https://${analysis.brand}.com`
+      ];
+
+  const sourceLabel = analysis.brand || preferredDomains[0] || "official";
   let root = null;
   let robots = "";
 
@@ -1222,7 +1232,7 @@ async function discoverOfficialSitemap(analysis, limit) {
       return {
         title,
         url: row.url,
-        snippet: snippet || `Official ${analysis.brand} documentation candidate`,
+        snippet: snippet || `Official ${sourceLabel} documentation candidate`,
         publishedAt: null,
         provider: "official-sitemap",
         rank: index + 1
@@ -1231,7 +1241,7 @@ async function discoverOfficialSitemap(analysis, limit) {
       return {
         title: null,
         url: row.url,
-        snippet: `Official ${analysis.brand} documentation candidate`,
+        snippet: `Official ${sourceLabel} documentation candidate`,
         publishedAt: null,
         provider: "official-sitemap",
         rank: index + 1
@@ -1517,11 +1527,21 @@ export async function discoverWeb(query, options = {}) {
 
   let results = fuse(collected, analysis, limit);
 
+  const structuredPrimary =
+    analysis.planner?.provider === "agent-structured" &&
+    analysis.sourcePolicy === "primary" &&
+    (analysis.officialDomains || []).length > 0;
+
   if (
     results.length < Math.min(limit, 3) &&
-    analysis.strictPrecision &&
-    analysis.brand &&
-    (analysis.intent === "technical_tutorial" || analysis.intent === "technical")
+    (
+      structuredPrimary ||
+      (
+        analysis.strictPrecision &&
+        analysis.brand &&
+        (analysis.intent === "technical_tutorial" || analysis.intent === "technical")
+      )
+    )
   ) {
     try {
       const remaining = deadline - Date.now();
