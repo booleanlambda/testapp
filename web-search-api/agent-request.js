@@ -137,6 +137,8 @@ export function parseAgentSearchRequest(body = {}) {
     output: String(body.output || "passages").trim()
   };
 
+  if (request.output !== "passages") throw new Error("invalid_agent_output");
+
   const anchorInput = [
     ...entities,
     ...concepts,
@@ -209,7 +211,7 @@ export function agentSearchSchema() {
       required_evidence: "string[]",
       max_results: "1..20",
       crawl_budget: "1..10",
-      output: ["passages", "snippets", "raw_pages", "citations"]
+      output: ["passages"]
     }
   };
 }
