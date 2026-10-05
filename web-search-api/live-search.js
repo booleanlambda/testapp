@@ -133,6 +133,28 @@ function fastEvidenceRows(pages) {
   }));
 }
 
+function pageMatchesQueryContext(page, anchors = []) {
+  const terms = [...new Set(
+    (anchors || [])
+      .map((value) => normalizeEvidenceText(value))
+      .filter(Boolean)
+  )];
+
+  if (!terms.length) return { ok: true, matched: [], required: 0 };
+
+  const haystack = normalizeEvidenceText(
+    `${page?.title || ""}\n${page?.text || ""}\n${page?.url || ""}`
+  );
+  const matched = terms.filter((term) => haystack.includes(term));
+  const required = terms.length >= 2 ? 2 : 1;
+
+  return {
+    ok: matched.length >= required,
+    matched,
+    required
+  };
+}
+
 function evidencePassage(text, terms = [], concepts = [], maxChars = 2200) {
   const source = String(text || "");
   if (source.length <= maxChars) return source;
@@ -206,7 +228,9 @@ async function fetchUntilEvidenceFast({
   requiredEvidence,
   concepts,
   maxTotal,
-  concurrency = 2
+  concurrency = 2,
+  queryContextAnchors = [],
+  enforceQueryContext = false
 }) {
   const pages = [];
   const activity = [];
@@ -241,8 +265,21 @@ async function fetchUntilEvidenceFast({
     });
 
     if (result.page) {
-      pages.push(result.page);
-      evidence = evidenceCoverage(requiredEvidence, fastEvidenceRows(pages));
+      const context = enforceQueryContext
+        ? pageMatchesQueryContext(result.page, queryContextAnchors)
+        : { ok: true, matched: [], required: 0 };
+
+      if (context.ok) {
+        pages.push(result.page);
+        evidence = evidenceCoverage(requiredEvidence, fastEvidenceRows(pages));
+      } else {
+        activity[activity.length - 1] = {
+          ...activity[activity.length - 1],
+          status: "context-rejected",
+          contextMatched: context.matched,
+          contextRequired: context.required
+        };
+      }
     }
 
     if ((evidenceRequired && evidence.complete) || activity.length >= maxTotal) {
@@ -508,7 +545,11 @@ export async function liveSearch(query, options = {}) {
       requiredEvidence,
       concepts: options.agentRequest.concepts || [],
       maxTotal: maxCrawl,
-      concurrency: requiredEvidence.length ? 2 : 3
+      concurrency: requiredEvidence.length ? 2 : 3,
+      queryContextAnchors: options.analysis?.queryOnlyAnchors || [],
+      enforceQueryContext:
+        options.analysis?.planner?.provider === "agent-structured" &&
+        options.agentRequest?.sourcePolicy === "broad_web"
     });
 
     fastPages = fastPass.pages;
@@ -601,7 +642,11 @@ export async function liveSearch(query, options = {}) {
           requiredEvidence: options.agentRequest.requiredEvidence || [],
           concepts: options.agentRequest.concepts || [],
           maxTotal: remainingCrawl,
-          concurrency: 2
+          concurrency: 2,
+          queryContextAnchors: options.analysis?.queryOnlyAnchors || [],
+          enforceQueryContext:
+            options.analysis?.planner?.provider === "agent-structured" &&
+            options.agentRequest?.sourcePolicy === "broad_web"
         });
 
         crawlActivity = [...crawlActivity, ...retryPass.activity];
@@ -722,6 +767,7 @@ export async function liveSearch(query, options = {}) {
       reused: crawlActivity.filter((x) => x?.status === "reused").length,
       fastFetched: crawlActivity.filter((x) => x?.status === "fast-fetched").length,
       fastCache: crawlActivity.filter((x) => x?.status === "fast-cache").length,
+      contextRejected: crawlActivity.filter((x) => x?.status === "context-rejected").length,
       failed: crawlActivity.filter((x) => x?.status === "failed").length,
       activity: crawlActivity
     },
