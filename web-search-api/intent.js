@@ -54,13 +54,20 @@ function inferBrand(q, content) {
     "client-side"
   ]);
 
+  const technicalContext = /\b(api|sdk|code|developer|programming|javascript|node(?:\.js)?|nodejs|python|runtime|event loop|microtask|callback|database|kubernetes|postgres|mongodb)\b/i.test(q);
+
   for (const token of raws) {
     const lowerToken = token.toLowerCase();
+    const codeLikeIdentifier =
+      token.includes(".") ||
+      token.includes("_") ||
+      (technicalContext && /^[a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*$/.test(token));
 
-    // Mixed/title-case technical identifiers and hyphenated descriptors are not brands.
-    // This prevents bogus rewrites such as site:managedfields.com or site:server-side.com.
+    // Mixed/title-case product names can be useful brands, but code identifiers are not.
+    // This prevents rewrites such as site:process.nexttick.com or site:queuemicrotask.com.
     if (
       !token.includes("-") &&
+      !codeLikeIdentifier &&
       !nonBrandTechnicalTokens.has(lowerToken) &&
       /[a-z][A-Z]|[A-Z].*[A-Z]/.test(token) &&
       token.length >= 5
