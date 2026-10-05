@@ -1475,9 +1475,13 @@ export async function discoverWeb(query, options = {}) {
 
   const attempts = [];
   const collected = [];
+  const structuredPrimary =
+    analysis.planner?.provider === "agent-structured" &&
+    analysis.sourcePolicy === "primary" &&
+    (analysis.officialDomains || []).length > 0;
 
   const variantsToRun =
-    analysis.intent === "technical_comparison"
+    analysis.intent === "technical_comparison" || structuredPrimary
       ? analysis.variants.slice(0, 1)
       : analysis.variants;
 
@@ -1526,11 +1530,6 @@ export async function discoverWeb(query, options = {}) {
   }
 
   let results = fuse(collected, analysis, limit);
-
-  const structuredPrimary =
-    analysis.planner?.provider === "agent-structured" &&
-    analysis.sourcePolicy === "primary" &&
-    (analysis.officialDomains || []).length > 0;
 
   if (
     results.length < Math.min(limit, 3) &&
