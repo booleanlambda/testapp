@@ -647,6 +647,8 @@ server.listen(port, "0.0.0.0", async () => {
         technicalIntent: String(result.discovery?.intent || "").startsWith("technical"),
         primaryPythonSource: rankedRows.some((row) => /(^|\.)docs\.python\.org$/i.test((() => { try { return new URL(row.url || "").hostname; } catch { return ""; } })())),
         ranked: rankedRows.length > 0,
+        fastPath: result.fastPath?.used === true,
+        embeddingOffCriticalPath: result.embeddingModel == null,
         evidenceComplete: result.evidence?.complete === true,
         taskGroup: result.evidence?.matched?.some((x) => /taskgroup/i.test(x)) === true,
         cancel: result.evidence?.matched?.some((x) => /cancel/i.test(x)) === true,
@@ -731,8 +733,10 @@ server.listen(port, "0.0.0.0", async () => {
         structuredPlanner: planner.provider === "agent-structured",
         noPlannerModel: planner.model == null,
         technicalIntent: String(result.discovery?.intent || "").startsWith("technical"),
-        freshlyIndexed: Number(result.crawl?.indexed || 0) > 0 || Number(result.crawl?.reused || 0) > 0,
+        fastRetrieved: Number(result.crawl?.fastFetched || 0) > 0 || Number(result.crawl?.fastCache || 0) > 0,
         ranked: rankedRows.length > 0,
+        fastPath: result.fastPath?.used === true,
+        embeddingOffCriticalPath: result.embeddingModel == null,
         redisSource: rankedRows.some((row) => /(^|\.)redis\.io$/i.test((() => { try { return new URL(row.url || "").hostname; } catch { return ""; } })())),
         evidenceComplete: result.evidence?.complete === true
       };
