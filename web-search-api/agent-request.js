@@ -67,11 +67,28 @@ function queryVariants(query, request, baseline) {
   const concepts = request.concepts.slice(0, 6);
   const entities = request.entities.slice(0, 3);
   const evidence = request.requiredEvidence.slice(0, 6);
-  const focus = [...new Set([...entities, ...concepts, ...evidence])].join(" ").replace(/\s+/g, " ").trim();
+  const focusItems = [...new Set([...entities, ...concepts, ...evidence])];
+  const focus = focusItems.join(" ").replace(/\s+/g, " ").trim();
   const variants = [query];
 
+  const quoteDistinctive = (value) => {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    return /[\s-]/.test(text) ? `"${text.replace(/"/g, "")}"` : text;
+  };
+
   if (request.preferredDomains.length && focus) {
-    variants.unshift(`site:${request.preferredDomains[0]} ${focus}`);
+    const distinctive = [...new Set([...evidence, ...concepts])]
+      .slice(0, 4)
+      .map(quoteDistinctive)
+      .filter(Boolean);
+    variants.unshift(
+      [
+        `site:${request.preferredDomains[0]}`,
+        ...entities,
+        ...distinctive
+      ].filter(Boolean).join(" ")
+    );
   }
 
   if (focus) {
