@@ -94,8 +94,13 @@ async function readLimited(response) {
   return out;
 }
 
-export async function fetchSafe(rawUrl) {
+export async function fetchSafe(rawUrl, options = {}) {
   let current = (await validatePublicUrl(rawUrl)).toString();
+  const timeoutMs = Math.max(500, Math.min(Number(options.timeoutMs || 12000), 12000));
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeoutSignal])
+    : timeoutSignal;
 
   for (let redirects = 0; redirects <= 5; redirects++) {
     await validatePublicUrl(current);
@@ -108,7 +113,7 @@ export async function fetchSafe(rawUrl) {
         accept: "text/html,application/xhtml+xml,text/markdown,text/plain;q=0.8,*/*;q=0.1",
         "accept-language": "en-US,en;q=0.8"
       },
-      signal: AbortSignal.timeout(12000)
+      signal
     });
 
     if ([301, 302, 303, 307, 308].includes(response.status)) {
@@ -307,13 +312,13 @@ function looksLikeThinShell(page) {
   return signalCount >= 3 && text.length < 1800;
 }
 
-async function enrichWithMarkdown(page) {
+async function enrichWithMarkdown(page, options = {}) {
   if (!page?.markdownUrls?.length) return page;
   if (!looksLikeThinShell(page) && page.text.length >= 1500) return page;
 
   for (const markdownUrl of page.markdownUrls.slice(0, 3)) {
     try {
-      const fetched = await fetchSafe(markdownUrl);
+      const fetched = await fetchSafe(markdownUrl, options);
       const markdownPage = extractPage(fetched.body, fetched.url, fetched.contentType);
       if (
         markdownPage.text.length >= 500 &&
@@ -412,6 +417,38 @@ async function allowedByRobots(rawUrl, cache) {
 
 function normalizeStart(raw) {
   return normalizeUrl(raw) || raw;
+}
+
+export async function fetchPageFast(startUrl, options = {}) {
+  const respectRobots = options.respectRobots !== false;
+  const timeoutMs = Math.max(1000, Math.min(Number(options.timeoutMs || 5000), 8000));
+  const start = normalizeStart((await validatePublicUrl(startUrl)).toString());
+  const robotsCache = new Map();
+
+  if (respectRobots && !(await allowedByRobots(start, robotsCache))) {
+    throw new Error("robots_disallowed");
+  }
+
+  const fetched = await fetchSafe(start, {
+    signal: options.signal,
+    timeoutMs
+  });
+
+  let page = extractPage(fetched.body, fetched.url, fetched.contentType);
+  if (options.enrichMarkdown !== false) {
+    page = await enrichWithMarkdown(page, {
+      signal: options.signal,
+      timeoutMs: Math.min(timeoutMs, 3500)
+    });
+  }
+
+  if (page.text.length < 80) throw new Error("insufficient_text");
+
+  return {
+    ...page,
+    statusCode: fetched.statusCode,
+    contentType: fetched.contentType
+  };
 }
 
 export async function crawlSite(startUrl, options = {}) {
