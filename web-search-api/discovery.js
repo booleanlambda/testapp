@@ -4,15 +4,17 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 42;
+const DISCOVERY_CACHE_VERSION = 43;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
-let nextAllowedAt = 0;
+const providerNextAllowedAt = new Map();
 
-async function throttle(ms = 850) {
-  const wait = Math.max(0, nextAllowedAt - Date.now());
-  if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
-  nextAllowedAt = Date.now() + ms;
+async function throttle(provider = "default", ms = 250) {
+  const now = Date.now();
+  const reservedAt = Math.max(now, providerNextAllowedAt.get(provider) || 0);
+  providerNextAllowedAt.set(provider, reservedAt + ms);
+  const wait = reservedAt - now;
+  if (wait > 0) await sleep(wait);
 }
 
 async function boundedValue(promise, ms, fallback = null) {
@@ -206,7 +208,7 @@ async function discoverSearx(query, limit, category = "general") {
 }
 
 async function discoverBingNews(query, limit) {
-  await throttle();
+  await throttle("bing", 250);
   const url = new URL("https://www.bing.com/news/search");
   url.searchParams.set("q", query);
   url.searchParams.set("format", "rss");
@@ -237,7 +239,7 @@ async function discoverBingNews(query, limit) {
 }
 
 async function discoverBingHtml(query, limit) {
-  await throttle();
+  await throttle("bing", 250);
   const url = new URL("https://www.bing.com/search");
   url.searchParams.set("q", query);
   url.searchParams.set("count", "20");
@@ -1044,7 +1046,7 @@ async function verifyOfficialSearchRows(rows, analysis, limit) {
 }
 
 async function discoverDuckDuckGoHtml(query, limit) {
-  await throttle();
+  await throttle("duckduckgo", 350);
   const url = new URL("https://html.duckduckgo.com/html/");
   url.searchParams.set("q", query);
 
@@ -1073,7 +1075,7 @@ async function discoverDuckDuckGoHtml(query, limit) {
 }
 
 async function discoverDuckDuckGoLite(query, limit) {
-  await throttle();
+  await throttle("duckduckgo", 350);
   const url = new URL("https://lite.duckduckgo.com/lite/");
   url.searchParams.set("q", query);
 
@@ -1703,7 +1705,7 @@ export async function discoverWeb(query, options = {}) {
     provider: process.env.SEARCH_DISCOVERY_BASE_URL ? "searxng+bing+ddg" : "bing+ddg"
   }));
 
-  const cached = await boundedValue(getDiscoveryCache(cacheKey), 1500, null);
+  const cached = await boundedValue(getDiscoveryCache(cacheKey), 600, null);
   if (cached) {
     return { ...cached, cached: true };
   }
@@ -1735,7 +1737,7 @@ export async function discoverWeb(query, options = {}) {
         officialPromise.then((rows) => ({ settled: true, rows })),
         new Promise((resolve) => setTimeout(
           () => resolve({ settled: false, rows: null }),
-          900
+          550
         ))
       ]);
 
