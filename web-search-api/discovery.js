@@ -1359,6 +1359,43 @@ async function discoverOfficialSitemap(analysis, limit) {
 async function runVariant(query, analysis, limit) {
   const attempts = [];
   const rows = [];
+  const structuredPrimary =
+    analysis.planner?.provider === "agent-structured" &&
+    analysis.sourcePolicy === "primary" &&
+    (analysis.officialDomains || []).length > 0;
+
+  // The caller already supplied intent + trusted domains. Do not run the old
+  // technical pre-verifier here: preferred-domain enforcement and required
+  // evidence validation happen after crawl in liveSearch().
+  if (structuredPrimary) {
+    if (process.env.SEARCH_DISCOVERY_BASE_URL) {
+      try {
+        const found = await boundedValue(
+          discoverSearx(query, limit, "general"),
+          4200,
+          []
+        );
+        rows.push(...found);
+        attempts.push({ provider: "searxng-raw", query, ok: found.length > 0 });
+      } catch (error) {
+        attempts.push({ provider: "searxng-raw", query, ok: false, error: error?.message });
+      }
+    }
+
+    if (rows.length < limit) {
+      const bing = await boundedValue(discoverBingHtml(query, limit), 6000, []);
+      if (bing.length) rows.push(...bing);
+      attempts.push({ provider: "bing-html-raw", query, ok: bing.length > 0 });
+    }
+
+    if (!rows.length) {
+      const ddg = await boundedValue(discoverDuckDuckGo(query, limit), 6000, []);
+      if (ddg.length) rows.push(...ddg);
+      attempts.push({ provider: ddg[0]?.provider || "duckduckgo-raw", query, ok: ddg.length > 0 });
+    }
+
+    return { rows, attempts };
+  }
 
   if (analysis.intent === "technical_comparison") {
     try {
