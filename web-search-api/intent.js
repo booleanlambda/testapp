@@ -361,8 +361,24 @@ export function relevanceScore(row, analysis) {
   if (needed > 0 && anchorHits === 0) score -= 8;
   else if (needed > 1 && anchorHits < needed) score -= 2;
 
-  const structuredSitemapCandidate =
+  let structuredPrimaryCandidate = false;
+  if (
     analysis.planner?.provider === "agent-structured" &&
+    analysis.sourcePolicy === "primary" &&
+    Array.isArray(analysis.officialDomains) &&
+    analysis.officialDomains.length
+  ) {
+    try {
+      const host = new URL(row.url).hostname.toLowerCase().replace(/^www\./, "");
+      structuredPrimaryCandidate = analysis.officialDomains.some((domain) => {
+        const d = String(domain || "").toLowerCase().replace(/^www\./, "");
+        return host === d || host.endsWith(`.${d}`);
+      });
+    } catch {}
+  }
+
+  const structuredSitemapCandidate =
+    structuredPrimaryCandidate &&
     /^official-sitemap(?:-cache)?$/.test(String(row.provider || ""));
 
   const precisionHits = precisionHitSet.size;
@@ -371,17 +387,17 @@ export function relevanceScore(row, analysis) {
     // path validates required evidence after the page is crawled, so do not
     // reject a primary-source URL merely because its URL/title lacks the
     // exact evidence phrase.
-    if (precisionHits === 0 && !structuredSitemapCandidate) score -= 12;
+    if (precisionHits === 0 && !structuredPrimaryCandidate) score -= 12;
     else if (
       analysis.strictPrecision &&
-      !structuredSitemapCandidate &&
+      !structuredPrimaryCandidate &&
       precisionHits < Math.min(2, analysis.precisionAnchors.length)
     ) {
       score -= 6;
     }
   }
 
-  if (structuredSitemapCandidate) score += 5;
+  if (structuredPrimaryCandidate) score += 5;
 
   if (analysis.brand) {
     try {
