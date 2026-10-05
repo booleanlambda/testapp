@@ -53,6 +53,11 @@ function providerConfig() {
   const chat = new URL(root.toString());
   chat.pathname = (root.pathname.replace(/\/+$/, "") || "") + "/chat/completions";
 
+  const host = root.hostname.toLowerCase();
+  const legacyDirectBinding =
+    host === "integrate.api.nvidia.com" ||
+    Boolean(process.env.NVIDIA_API_KEY || process.env.SAAU_NVIDIA_BASE_URL || process.env.AAU_NVIDIA_BASE_URL);
+
   return {
     apiKey,
     models: models.toString(),
@@ -61,7 +66,9 @@ function providerConfig() {
       process.env.LLM_MODEL?.trim() ||
       process.env.SEARCH_LLM_MODEL?.trim() ||
       process.env.ROUTER_MODEL?.trim() ||
-      null
+      process.env.SAAU_MODEL?.trim() ||
+      process.env.NVIDIA_MODEL?.trim() ||
+      (legacyDirectBinding ? "google/gemma-4-31b-it" : null)
   };
 }
 
