@@ -67,7 +67,7 @@ function queryVariants(query, request, baseline) {
   const concepts = request.concepts.slice(0, 6);
   const entities = request.entities.slice(0, 3);
   const evidence = request.requiredEvidence.slice(0, 6);
-  const focus = [...entities, ...concepts, ...evidence].join(" ").replace(/\s+/g, " ").trim();
+  const focus = [...new Set([...entities, ...concepts, ...evidence])].join(" ").replace(/\s+/g, " ").trim();
   const variants = [query];
 
   if (request.preferredDomains.length && focus) {
@@ -147,7 +147,6 @@ export function parseAgentSearchRequest(body = {}) {
   ];
 
   const precisionInput = [
-    ...requiredEvidence,
     ...concepts,
     ...(baseline.precisionAnchors || [])
   ];
@@ -159,10 +158,9 @@ export function parseAgentSearchRequest(body = {}) {
     precisionAnchors: uniqLower(precisionInput, 8),
     phrases: uniqLower([...(baseline.phrases || []), ...concepts.filter((x) => x.includes(" "))], 10),
     brand: entities[0] ? entities[0].toLowerCase() : baseline.brand,
-    strictPrecision:
-      requiredEvidence.length > 0 ||
-      sourcePolicy === "primary" ||
-      (intent.startsWith("technical") && concepts.length >= 2),
+    // Required evidence is validated after crawling. Do not reject candidate pages
+    // merely because search-result snippets do not contain every requested term.
+    strictPrecision: body.strict_discovery === true,
     variants: [],
     planner: {
       provider: "agent-structured",
@@ -209,6 +207,7 @@ export function agentSearchSchema() {
       preferred_domains: "hostname[]",
       excluded_domains: "hostname[]",
       required_evidence: "string[]",
+      strict_discovery: "boolean (default false; required_evidence is checked after crawl)",
       max_results: "1..20",
       crawl_budget: "1..10",
       output: ["passages"]
