@@ -242,7 +242,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && path === "/") {
       sendJson(res, 200, {
         service: "web-search-api",
-        version: "0.5.1",
+        version: "0.6.0",
         endpoints: {
           health: "GET /health",
           diagnostics: "GET /diagnostics",
@@ -496,7 +496,7 @@ async function runStructuredLatencyProbe() {
 }
 
 server.listen(port, "0.0.0.0", async () => {
-  console.log(`web-search-api v0.5.1 listening on ${port}`);
+  console.log(`web-search-api v0.6.0 listening on ${port}`);
 
   try {
     await ensureIndexes();
