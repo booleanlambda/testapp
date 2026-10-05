@@ -213,6 +213,7 @@ async function fetchUntilEvidenceFast({
   const active = new Map();
   let nextIndex = 0;
   let idSeq = 0;
+  const evidenceRequired = Array.isArray(requiredEvidence) && requiredEvidence.length > 0;
   let evidence = evidenceCoverage(requiredEvidence, []);
 
   const launch = (row) => {
@@ -244,7 +245,7 @@ async function fetchUntilEvidenceFast({
       evidence = evidenceCoverage(requiredEvidence, fastEvidenceRows(pages));
     }
 
-    if (evidence.complete || activity.length >= maxTotal) {
+    if ((evidenceRequired && evidence.complete) || activity.length >= maxTotal) {
       for (const entry of active.values()) entry.controller.abort();
       await Promise.allSettled([...active.values()].map((entry) => entry.promise));
       active.clear();
@@ -500,14 +501,14 @@ export async function liveSearch(query, options = {}) {
   let fastPathUsed = false;
   let fastPages = [];
 
-  if (options.agentRequest && requiredEvidence.length) {
+  if (options.agentRequest) {
     const fastPass = await fetchUntilEvidenceFast({
       rows: selected,
       freshSeconds,
       requiredEvidence,
       concepts: options.agentRequest.concepts || [],
       maxTotal: maxCrawl,
-      concurrency: 2
+      concurrency: requiredEvidence.length ? 2 : 3
     });
 
     fastPages = fastPass.pages;
