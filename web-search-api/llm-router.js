@@ -6,6 +6,10 @@ const planCache = new Map();
 
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const MODEL_TTL_MS = 60 * 60 * 1000;
+const MODEL_DISCOVERY_TIMEOUT_MS = 2500;
+const PLANNER_TOTAL_TIMEOUT_MS = 5500;
+const PLANNER_ATTEMPT_TIMEOUT_MS = 3200;
+const PLANNER_MAX_TOKENS = 180;
 const VALID_INTENTS = new Set([
   "general",
   "news",
@@ -53,22 +57,16 @@ function providerConfig() {
   const chat = new URL(root.toString());
   chat.pathname = (root.pathname.replace(/\/+$/, "") || "") + "/chat/completions";
 
-  const host = root.hostname.toLowerCase();
-  const legacyDirectBinding =
-    host === "integrate.api.nvidia.com" ||
-    Boolean(process.env.NVIDIA_API_KEY || process.env.SAAU_NVIDIA_BASE_URL || process.env.AAU_NVIDIA_BASE_URL);
-
   return {
     apiKey,
     models: models.toString(),
     chat: chat.toString(),
     explicitModel:
-      process.env.LLM_MODEL?.trim() ||
+      process.env.LLM_ROUTER_MODEL?.trim() ||
       process.env.SEARCH_LLM_MODEL?.trim() ||
       process.env.ROUTER_MODEL?.trim() ||
-      process.env.SAAU_MODEL?.trim() ||
-      process.env.NVIDIA_MODEL?.trim() ||
-      (legacyDirectBinding ? "google/gemma-4-31b-it" : null)
+      process.env.LLM_MODEL?.trim() ||
+      null
   };
 }
 
@@ -79,18 +77,32 @@ function headers(config) {
   };
 }
 
+function modelSizeBillions(id = "") {
+  const match = String(id).toLowerCase().match(/(?:^|[-_/])(\d+(?:\.\d+)?)b(?:[-_/]|$)/);
+  return match ? Number(match[1]) : null;
+}
+
 function scoreChatModel(id = "") {
   const s = String(id).toLowerCase();
   if (!s) return -1000;
   if (/embed|embedding|rerank|retrieval|audio|speech|tts|image|vision/.test(s)) return -1000;
 
+  const size = modelSizeBillions(s);
+  if (size !== null && size > 16) return -1000;
+
   let score = 10;
-  if (/instruct|chat|assistant/.test(s)) score += 70;
+  if (/instruct|chat|assistant|it(?:[-_/]|$)/.test(s)) score += 70;
   if (/llama|qwen|mistral|gemma|nemotron|phi/.test(s)) score += 25;
-  if (/\b(1|2|3|4|7|8|9|12)b\b|[-_/](1|2|3|4|7|8|9|12)b([-_/]|$)/.test(s)) score += 18;
-  if (/mini|small|flash/.test(s)) score += 16;
-  if (/reason|thinking/.test(s)) score -= 8;
-  if (/\b(34|40|70|72|405)b\b|[-_/](34|40|70|72|405)b([-_/]|$)/.test(s)) score -= 35;
+  if (/mini|small|flash|nano/.test(s)) score += 28;
+  if (/reason|thinking|reasoning/.test(s)) score -= 35;
+
+  if (size !== null) {
+    if (size >= 3 && size <= 9) score += 90;
+    else if (size > 9 && size <= 14) score += 45;
+    else if (size < 3) score += 30;
+    else score -= 20;
+  }
+
   return score;
 }
 
@@ -104,7 +116,7 @@ async function discoverCandidates(config, force = false) {
   try {
     const response = await fetch(config.models, {
       headers: headers(config),
-      signal: AbortSignal.timeout(6000)
+      signal: AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS)
     });
     if (!response.ok) return [];
 
@@ -200,7 +212,7 @@ function normalizePlan(raw) {
   };
 }
 
-async function requestPlan(config, model, query) {
+async function requestPlan(config, model, query, timeoutMs = PLANNER_ATTEMPT_TIMEOUT_MS) {
   const system = [
     "You are a search query planner for an autonomous web search engine.",
     "Classify the query and produce search instructions, not an answer.",
@@ -222,9 +234,9 @@ async function requestPlan(config, model, query) {
         { role: "user", content: query }
       ],
       temperature: 0,
-      max_tokens: 320
+      max_tokens: PLANNER_MAX_TOKENS
     }),
-    signal: AbortSignal.timeout(15000)
+    signal: AbortSignal.timeout(timeoutMs)
   });
 
   const text = await response.text();
@@ -263,9 +275,19 @@ async function resolvePlan(query) {
   }
 
   let lastError = null;
-  for (const model of candidates.slice(0, 4)) {
+  const deadline = Date.now() + PLANNER_TOTAL_TIMEOUT_MS;
+
+  for (const model of candidates.slice(0, 2)) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs < 800) break;
+
     try {
-      const plan = await requestPlan(config, model, query);
+      const plan = await requestPlan(
+        config,
+        model,
+        query,
+        Math.min(PLANNER_ATTEMPT_TIMEOUT_MS, remainingMs)
+      );
       cachedModel = model;
       cachedModelAt = Date.now();
       const value = { plan, model };
