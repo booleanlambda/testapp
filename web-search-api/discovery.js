@@ -1604,7 +1604,7 @@ export async function discoverWeb(query, options = {}) {
   if (!q) throw new Error("query_required");
 
   const limit = Math.max(1, Math.min(Number(options.limit || 8), 20));
-  const cacheTtl = Math.max(30, Math.min(Number(options.cacheTtl || 600), 3600));
+  const cacheTtl = Math.max(30, Math.min(Number(options.cacheTtl || 600), 21600));
   const deterministicAnalysis = analyzeQuery(q);
   const analysis = options.analysis || await enrichQueryAnalysis(q, deterministicAnalysis);
   const maxMs = Math.max(5000, Math.min(Number(options.maxMs || 26000), 30000));
