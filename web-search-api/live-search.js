@@ -80,41 +80,113 @@ async function mapLimit(items, limit, worker) {
   return results;
 }
 
-async function crawlRows(rows, freshSeconds) {
-  return mapLimit(rows, 2, async (row) => {
-    try {
-      const existing = await getDocument(row.url);
-      if (isFresh(existing, freshSeconds)) {
-        return {
-          url: row.url,
-          canonicalUrl: existing.url || row.url,
-          status: "reused",
-          crawledAt: existing.crawledAt
-        };
-      }
-
-      const result = await crawlSite(row.url, {
-        maxPages: 1,
-        depth: 0,
-        sameOrigin: true,
-        respectRobots: true
-      });
-
+async function crawlRow(row, freshSeconds) {
+  try {
+    const existing = await getDocument(row.url);
+    if (isFresh(existing, freshSeconds)) {
       return {
         url: row.url,
-        canonicalUrl: result.pages?.[0]?.url || row.url,
-        status: result.indexedPages > 0 ? "indexed" : "failed",
-        indexedPages: result.indexedPages,
-        failures: result.failures
-      };
-    } catch (error) {
-      return {
-        url: row.url,
-        status: "failed",
-        error: String(error?.message || "crawl_failed").slice(0, 300)
+        canonicalUrl: existing.url || row.url,
+        status: "reused",
+        crawledAt: existing.crawledAt
       };
     }
-  });
+
+    const result = await crawlSite(row.url, {
+      maxPages: 1,
+      depth: 0,
+      sameOrigin: true,
+      respectRobots: true
+    });
+
+    return {
+      url: row.url,
+      canonicalUrl: result.pages?.[0]?.url || row.url,
+      status: result.indexedPages > 0 ? "indexed" : "failed",
+      indexedPages: result.indexedPages,
+      failures: result.failures
+    };
+  } catch (error) {
+    return {
+      url: row.url,
+      status: "failed",
+      error: String(error?.message || "crawl_failed").slice(0, 300)
+    };
+  }
+}
+
+async function crawlRows(rows, freshSeconds) {
+  return mapLimit(rows, 2, (row) => crawlRow(row, freshSeconds));
+}
+
+async function rankUrls(query, urls, limit, perDocument) {
+  if (!urls.length) {
+    return {
+      query,
+      embeddingModel: null,
+      candidateCount: 0,
+      results: []
+    };
+  }
+
+  try {
+    return await searchIndex(query, {
+      limit,
+      urls,
+      candidateLimit: 2000,
+      perDocument
+    });
+  } catch {
+    return {
+      query,
+      embeddingModel: null,
+      candidateCount: 0,
+      results: []
+    };
+  }
+}
+
+async function crawlUntilEvidence({
+  rows,
+  freshSeconds,
+  query,
+  activity = [],
+  maxTotal,
+  requiredEvidence,
+  limit,
+  perDocument
+}) {
+  let nextActivity = [...activity];
+  let ranked = await rankUrls(
+    query,
+    successfulCandidateUrls(nextActivity),
+    limit,
+    perDocument
+  );
+  let evidence = evidenceCoverage(requiredEvidence, ranked.results);
+  let processed = 0;
+
+  for (const row of rows) {
+    if (nextActivity.length >= maxTotal || evidence.complete) break;
+    const result = await crawlRow(row, freshSeconds);
+    nextActivity.push(result);
+    processed += 1;
+
+    ranked = await rankUrls(
+      query,
+      successfulCandidateUrls(nextActivity),
+      limit,
+      perDocument
+    );
+    evidence = evidenceCoverage(requiredEvidence, ranked.results);
+  }
+
+  return {
+    activity: nextActivity,
+    ranked,
+    evidence,
+    processed
+  };
 }
 
 function successfulCandidateUrls(activity) {
@@ -185,30 +257,38 @@ export async function liveSearch(query, options = {}) {
   );
 
   const selected = allDiscoveryResults.slice(0, maxCrawl);
-  let crawlActivity = await crawlRows(selected, freshSeconds);
-  let candidateUrls = successfulCandidateUrls(crawlActivity);
-  let ranked = {
-    query: q,
-    embeddingModel: null,
-    candidateCount: 0,
-    results: []
-  };
+  const requiredEvidence = options.agentRequest?.requiredEvidence || [];
 
-  if (candidateUrls.length) {
-    try {
-      ranked = await searchIndex(q, {
-        limit,
-        urls: candidateUrls,
-        candidateLimit: 2000,
-        perDocument: discovery.strictPrecision ? 4 : 2
-      });
-    } catch {}
+  let crawlActivity;
+  let ranked;
+  let evidence;
+
+  if (options.agentRequest && requiredEvidence.length) {
+    const firstPass = await crawlUntilEvidence({
+      rows: selected,
+      freshSeconds,
+      query: q,
+      activity: [],
+      maxTotal: maxCrawl,
+      requiredEvidence,
+      limit,
+      perDocument: discovery.strictPrecision ? 4 : 2
+    });
+    crawlActivity = firstPass.activity;
+    ranked = firstPass.ranked;
+    evidence = firstPass.evidence;
+  } else {
+    crawlActivity = await crawlRows(selected, freshSeconds);
+    ranked = await rankUrls(
+      q,
+      successfulCandidateUrls(crawlActivity),
+      limit,
+      discovery.strictPrecision ? 4 : 2
+    );
+    evidence = evidenceCoverage(requiredEvidence, ranked.results);
   }
 
-  let evidence = evidenceCoverage(
-    options.agentRequest?.requiredEvidence || [],
-    ranked.results
-  );
+  let candidateUrls = successfulCandidateUrls(crawlActivity);
   let evidenceRetry = null;
 
   const remainingCrawl = Math.max(0, maxCrawl - crawlActivity.length);
@@ -256,34 +336,32 @@ export async function liveSearch(query, options = {}) {
       ).filter((row) => !alreadySeen.has(row.url));
 
       const retrySelected = retryEligible.slice(0, remainingCrawl);
-      const retryActivity = await crawlRows(retrySelected, freshSeconds);
-      crawlActivity = [...crawlActivity, ...retryActivity];
+      const missingBefore = [...evidence.missing];
+      const retryPass = await crawlUntilEvidence({
+        rows: retrySelected,
+        freshSeconds,
+        query: q,
+        activity: crawlActivity,
+        maxTotal: maxCrawl,
+        requiredEvidence: options.agentRequest.requiredEvidence || [],
+        limit,
+        perDocument: 3
+      });
+
+      crawlActivity = retryPass.activity;
+      ranked = retryPass.ranked;
+      evidence = retryPass.evidence;
       allDiscoveryResults = [...allDiscoveryResults, ...retryEligible];
       candidateUrls = successfulCandidateUrls(crawlActivity);
-
-      if (candidateUrls.length) {
-        try {
-          ranked = await searchIndex(q, {
-            limit,
-            urls: candidateUrls,
-            candidateLimit: 2000,
-            perDocument: 3
-          });
-        } catch {}
-      }
-
-      evidence = evidenceCoverage(
-        options.agentRequest.requiredEvidence || [],
-        ranked.results
-      );
 
       evidenceRetry = {
         attempted: true,
         query: retryQuery,
-        missingBefore: retryAnalysis.precisionAnchors.slice(0, evidence.missing.length || undefined),
+        missingBefore,
         discovered: retryDiscovery.results.length,
-        crawled: retrySelected.length,
-        completeAfter: evidence.complete
+        crawled: retryPass.processed,
+        completeAfter: evidence.complete,
+        stoppedEarly: evidence.complete && retryPass.processed < retrySelected.length
       };
     } catch (error) {
       evidenceRetry = {
