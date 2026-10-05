@@ -63,6 +63,20 @@ function uniqLower(values, max = 16) {
   return [...new Set(values.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean))].slice(0, max);
 }
 
+function queryContextPhrase(query, anchors = []) {
+  const lower = String(query || "").toLowerCase().replace(/[^a-z0-9._-]+/g, " ").trim();
+  const ordered = (anchors || []).map((value) => String(value || "").toLowerCase()).filter(Boolean);
+
+  for (let width = Math.min(3, ordered.length); width >= 2; width -= 1) {
+    for (let i = 0; i <= ordered.length - width; i += 1) {
+      const phrase = ordered.slice(i, i + width).join(" ");
+      if (phrase.length >= 8 && lower.includes(phrase)) return phrase;
+    }
+  }
+
+  return null;
+}
+
 function queryVariants(query, request, baseline) {
   const concepts = request.concepts.slice(0, 6);
   const entities = request.entities.slice(0, 3);
@@ -207,6 +221,19 @@ export function parseAgentSearchRequest(body = {}) {
   };
 
   analysis.variants = queryVariants(query, request, analysis);
+
+  if (sourcePolicy === "broad_web" && queryOnlyAnchors.length) {
+    const contextPhrase = queryContextPhrase(query, queryOnlyAnchors);
+    analysis.queryContextPhrase = contextPhrase;
+
+    if (contextPhrase) {
+      const semanticFocus = concepts[0] || entities[0] || "";
+      const focused = [`"${contextPhrase}"`, semanticFocus]
+        .filter(Boolean)
+        .join(" ");
+      analysis.variants = [...new Set([focused, ...analysis.variants])].slice(0, 3);
+    }
+  }
 
   return { request, analysis };
 }
