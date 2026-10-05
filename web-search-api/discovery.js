@@ -5,7 +5,7 @@ import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
 const DISCOVERY_CACHE_VERSION = 41;
-const OFFICIAL_CORPUS_CACHE_VERSION = 1;
+const OFFICIAL_CORPUS_CACHE_VERSION = 2;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 let nextAllowedAt = 0;
 
@@ -1262,10 +1262,22 @@ async function discoverOfficialSitemap(analysis, limit) {
     }
   }
 
-  if (corpusUrls.size) {
+  const cacheableCorpusUrls = [...corpusUrls].filter((url) => {
+    try {
+      const parsedUrl = new URL(url);
+      const segments = parsedUrl.pathname.split("/").filter(Boolean);
+      return segments.length >= 2 || !parsedUrl.pathname.endsWith("/");
+    } catch {
+      return false;
+    }
+  });
+
+  // Do not cache a root sitemap that only enumerates shallow section/version
+  // homepages. Those are namespace hints, not a useful searchable corpus.
+  if (cacheableCorpusUrls.length) {
     void setDiscoveryCache(
       corpusKey,
-      { urls: [...corpusUrls].slice(0, 5000), root, cachedAt: new Date().toISOString() },
+      { urls: cacheableCorpusUrls.slice(0, 5000), root, cachedAt: new Date().toISOString() },
       OFFICIAL_CORPUS_TTL_SECONDS
     ).catch(() => {});
   }
