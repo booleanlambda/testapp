@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 45;
+const DISCOVERY_CACHE_VERSION = 46;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -1421,6 +1421,39 @@ async function runVariant(query, analysis, limit) {
     analysis.planner?.provider === "agent-structured" &&
     analysis.sourcePolicy === "primary" &&
     (analysis.officialDomains || []).length > 0;
+  const structuredBroad =
+    analysis.planner?.provider === "agent-structured" &&
+    analysis.sourcePolicy === "broad_web";
+
+  if (structuredBroad) {
+    const startedAt = Date.now();
+    const jobs = [
+      boundedValue(discoverBingHtml(query, Math.max(limit, 10)), 3600, [])
+        .then((found) => ({ provider: "bing-html", found })),
+      boundedValue(discoverDuckDuckGo(query, Math.max(limit, 10)), 3600, [])
+        .then((found) => ({ provider: found[0]?.provider || "duckduckgo", found }))
+    ];
+
+    if (process.env.SEARCH_DISCOVERY_BASE_URL) {
+      jobs.push(
+        boundedValue(discoverSearx(query, Math.max(limit, 10), "general"), 3200, [])
+          .then((found) => ({ provider: "searxng", found }))
+      );
+    }
+
+    const settled = await Promise.all(jobs);
+    for (const result of settled) {
+      if (result.found.length) rows.push(...result.found);
+      attempts.push({
+        provider: result.provider,
+        query,
+        ok: result.found.length > 0,
+        durationMs: Date.now() - startedAt
+      });
+    }
+
+    return { rows, attempts };
+  }
 
   // The caller already supplied intent + trusted domains. Do not run the old
   // technical pre-verifier here: preferred-domain enforcement and required
