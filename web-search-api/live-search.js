@@ -359,6 +359,7 @@ export async function liveSearch(query, options = {}) {
         query: retryQuery,
         missingBefore,
         discovered: retryDiscovery.results.length,
+        attempts: retryDiscovery.attempts || [],
         crawled: retryPass.processed,
         completeAfter: evidence.complete,
         stoppedEarly: evidence.complete && retryPass.processed < retrySelected.length
@@ -415,6 +416,7 @@ export async function liveSearch(query, options = {}) {
       effectiveQueries: discovery.effectiveQueries,
       planner: discovery.planner || null,
       officialDomains: discovery.officialDomains || [],
+      attempts: discovery.attempts || [],
       cached: discovery.cached,
       discoveredAt: discovery.discoveredAt,
       resultCount: discovery.results.length
