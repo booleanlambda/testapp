@@ -329,6 +329,15 @@ export function relevanceScore(row, analysis) {
     if (hay.includes(phrase)) score += 5;
   }
 
+  if (
+    analysis.planner?.provider === "agent-structured" &&
+    analysis.sourcePolicy === "broad_web" &&
+    analysis.queryContextPhrase
+  ) {
+    const phrase = String(analysis.queryContextPhrase).toLowerCase();
+    if (hay.includes(phrase)) score += 12;
+  }
+
   if (analysis.intent === "news") {
     if (/news|reuters|bloomberg|cnbc|finance|business|economy|market|central bank|bank of ghana|monetary policy/.test(hay)) score += 2;
     if (/wikipedia|britannica|worldatlas|countryreports/.test(hay)) score -= 8;
