@@ -1076,7 +1076,15 @@ function scoreOfficialUrl(url, analysis, parentScore = 0) {
   let score = parentScore;
 
   for (const anchor of analysis.precisionAnchors || []) {
-    if (lower.includes(anchor.toLowerCase())) score += 5;
+    const normalized = String(anchor || "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+    if (normalized && lower.includes(normalized)) score += 5;
+  }
+
+  // Structured agents often know the product/module even when the exact
+  // requested concept only appears in page content, not in the URL.
+  for (const anchor of analysis.anchors || []) {
+    const normalized = String(anchor || "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+    if (normalized.length >= 3 && lower.includes(normalized)) score += 3;
   }
 
   for (const phrase of analysis.phrases || []) {
@@ -1086,6 +1094,7 @@ function scoreOfficialUrl(url, analysis, parentScore = 0) {
   }
 
   if (/\/docs\//.test(lower)) score += 3;
+  if (/\/library\//.test(lower)) score += 2;
   if (/search|vector|api|sdk|reference|guide|tutorial|install|deployment|self-managed/.test(lower)) score += 2;
   if (
     (analysis.anchors || []).some((x) => ["community","self-hosted","selfhosted","local","on-prem","onprem"].includes(x)) &&
