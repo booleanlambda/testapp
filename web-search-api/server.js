@@ -587,6 +587,74 @@ server.listen(port, "0.0.0.0", async () => {
 
   (async () => {
     const startedAt = Date.now();
+    const query = "What does copy-on-write mean for Redis forked background saves, and why can Transparent Huge Pages make latency spikes worse?";
+    try {
+      const result = await withTimeout(
+        liveSearch(query, {
+          limit: 10,
+          maxDiscover: 12,
+          maxCrawl: 6,
+          freshSeconds: 60
+        }),
+        70000
+      );
+
+      const rankedRows = (result.results || []).filter((row) => row.fallback !== true);
+      const evidence = rankedRows.map((row) => String(row.content || "")).join("\n").toLowerCase();
+      const planner = result.discovery?.planner || {};
+      const checks = {
+        discovered: Number(result.discovery?.resultCount || 0) > 0,
+        llmPlannerUsed: planner.provider === "llm",
+        lightweightPlanner: planner.model ? !/(?:^|[-_/])(31|34|40|70|72|405)b(?:[-_/]|$)/i.test(planner.model) : false,
+        technicalIntent: String(result.discovery?.intent || "").startsWith("technical"),
+        freshlyIndexed: Number(result.crawl?.indexed || 0) > 0 || Number(result.crawl?.reused || 0) > 0,
+        ranked: rankedRows.length > 0,
+        redisSource: rankedRows.some((row) => /(^|\.)redis\.io$/i.test((() => { try { return new URL(row.url || "").hostname; } catch { return ""; } })())),
+        copyOnWrite: /copy[- ]on[- ]write|cow/.test(evidence),
+        fork: /fork|bgsave|background save|background saving/.test(evidence),
+        transparentHugePages: /transparent huge pages|transparent_hugepage|thp/.test(evidence),
+        latency: /latency|latencies|stall|spike/.test(evidence)
+      };
+
+      const passed = Object.values(checks).every(Boolean);
+      const payload = {
+        name: "redis_cow_thp_llm_planner_full_pipeline",
+        query,
+        passed,
+        durationMs: Date.now() - startedAt,
+        discovery: result.discovery,
+        crawl: result.crawl,
+        embeddingModel: result.embeddingModel,
+        checks,
+        results: (result.results || []).slice(0, 10).map((row) => ({
+          title: row.title,
+          url: row.url,
+          score: row.score,
+          semanticScore: row.semanticScore,
+          lexicalScore: row.lexicalScore,
+          fallback: row.fallback || false,
+          excerpt: String(row.content || "").slice(0, 500)
+        }))
+      };
+
+      if (passed) {
+        console.log("RIGID_LIVE_PASS", JSON.stringify(payload));
+      } else {
+        console.error("RIGID_LIVE_FAIL", JSON.stringify(payload));
+      }
+    } catch (error) {
+      console.error("RIGID_LIVE_FAIL", JSON.stringify({
+        name: "redis_cow_thp_llm_planner_full_pipeline",
+        query,
+        passed: false,
+        durationMs: Date.now() - startedAt,
+        error: error?.message || String(error)
+      }));
+    }
+  })();
+
+  (async () => {
+    const startedAt = Date.now();
     const query = "How do MongoDB Vector Search scalar and binary quantization differ in memory savings and accuracy tradeoffs?";
     try {
       const result = await withTimeout(
