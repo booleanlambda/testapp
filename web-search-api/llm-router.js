@@ -20,8 +20,15 @@ function uniq(values) {
 }
 
 function providerConfig() {
-  const raw = process.env.LLM_BASE_URL || process.env.EMBEDDING_BASE_URL;
-  const apiKey = process.env.LLM_API_KEY || process.env.EMBEDDING_API_KEY;
+  const raw =
+    process.env.LLM_BASE_URL ||
+    process.env.AAU_NVIDIA_ENDPOINT ||
+    process.env.AAU_NVIDIA_BASE_URL ||
+    process.env.EMBEDDING_BASE_URL;
+  const apiKey =
+    process.env.LLM_API_KEY ||
+    process.env.NVIDIA_API_KEY ||
+    process.env.EMBEDDING_API_KEY;
   if (!raw || !apiKey) return null;
 
   const base = new URL(raw);
@@ -50,7 +57,11 @@ function providerConfig() {
     apiKey,
     models: models.toString(),
     chat: chat.toString(),
-    explicitModel: process.env.LLM_MODEL?.trim() || null
+    explicitModel:
+      process.env.LLM_MODEL?.trim() ||
+      process.env.SEARCH_LLM_MODEL?.trim() ||
+      process.env.ROUTER_MODEL?.trim() ||
+      null
   };
 }
 
@@ -259,14 +270,21 @@ async function resolvePlan(query) {
       return value;
     } catch (error) {
       lastError = error;
-      if (![400, 404, 405, 422, 429, 500, 502, 503, 504].includes(error?.status)) break;
+      if ([401, 403].includes(error?.status)) break;
     }
   }
 
-  if (lastError && process.env.LLM_ROUTER_DEBUG === "1") {
-    console.warn("LLM_ROUTER_FALLBACK", JSON.stringify({ error: lastError.message }));
+  if (process.env.LLM_ROUTER_DEBUG === "1") {
+    console.warn("LLM_ROUTER_FALLBACK", JSON.stringify({
+      candidateCount: candidates.length,
+      error: lastError?.message || (candidates.length ? "no_valid_plan" : "no_chat_candidates")
+    }));
   }
-  return null;
+  return {
+    plan: null,
+    model: null,
+    error: lastError?.message || (candidates.length ? "no_valid_plan" : "no_chat_candidates")
+  };
 }
 
 function normalizeConcept(value) {
@@ -284,7 +302,8 @@ export async function enrichQueryAnalysis(query, fallback) {
       ...fallback,
       planner: {
         provider: "deterministic-fallback",
-        model: null
+        model: null,
+        reason: resolved?.error || "planner_unavailable"
       }
     };
   }
