@@ -222,9 +222,9 @@ async function requestPlan(config, model, query) {
         { role: "user", content: query }
       ],
       temperature: 0,
-      max_tokens: 500
+      max_tokens: 320
     }),
-    signal: AbortSignal.timeout(7000)
+    signal: AbortSignal.timeout(15000)
   });
 
   const text = await response.text();
@@ -299,6 +299,24 @@ function normalizeConcept(value) {
 }
 
 export async function enrichQueryAnalysis(query, fallback) {
+  const deterministicHighConfidence =
+    fallback.intent !== "general" &&
+    (
+      fallback.strictPrecision ||
+      fallback.intent === "news" ||
+      fallback.intent === "commercial"
+    );
+
+  if (deterministicHighConfidence) {
+    return {
+      ...fallback,
+      planner: {
+        provider: "deterministic-high-confidence",
+        model: null
+      }
+    };
+  }
+
   let resolved = null;
   try {
     resolved = await resolvePlan(String(query || ""));
