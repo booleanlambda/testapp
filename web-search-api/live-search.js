@@ -80,40 +80,8 @@ async function mapLimit(items, limit, worker) {
   return results;
 }
 
-export async function liveSearch(query, options = {}) {
-  const q = String(query || "").trim();
-  if (!q) throw new Error("query_required");
-
-  const limit = Math.max(1, Math.min(Number(options.limit || 5), 20));
-  const maxDiscover = Math.max(limit, Math.min(Number(options.maxDiscover || 8), 20));
-  const maxCrawl = Math.max(1, Math.min(Number(options.maxCrawl || 5), 10));
-  const freshSeconds = Math.max(60, Math.min(Number(options.freshSeconds || 1800), 86400));
-
-  const discovery = await discoverWeb(q, {
-    limit: maxDiscover,
-    cacheTtl: Math.min(freshSeconds, 1800),
-    analysis: options.analysis || null
-  });
-
-  const excludedDomains = Array.isArray(options.agentRequest?.excludedDomains)
-    ? options.agentRequest.excludedDomains
-    : [];
-  const preferredDomains = Array.isArray(options.agentRequest?.preferredDomains)
-    ? options.agentRequest.preferredDomains
-    : [];
-  const primaryOnly =
-    options.agentRequest?.sourcePolicy === "primary" &&
-    preferredDomains.length > 0;
-
-  const eligibleDiscoveryResults = discovery.results.filter((row) => {
-    const host = hostname(row.url);
-    if (excludedDomains.some((domain) => domainMatches(host, domain))) return false;
-    if (primaryOnly && !preferredDomains.some((domain) => domainMatches(host, domain))) return false;
-    return true;
-  });
-
-  const selected = eligibleDiscoveryResults.slice(0, maxCrawl);
-  const crawlActivity = await mapLimit(selected, 2, async (row) => {
+async function crawlRows(rows, freshSeconds) {
+  return mapLimit(rows, 2, async (row) => {
     try {
       const existing = await getDocument(row.url);
       if (isFresh(existing, freshSeconds)) {
@@ -147,13 +115,78 @@ export async function liveSearch(query, options = {}) {
       };
     }
   });
+}
 
-  const candidateUrls = [...new Set(
-    crawlActivity
+function successfulCandidateUrls(activity) {
+  return [...new Set(
+    activity
       .filter((row) => row && (row.status === "indexed" || row.status === "reused"))
       .map((row) => row.canonicalUrl || row.url)
       .filter(Boolean)
   )];
+}
+
+function evidenceRetryQuery(agentRequest, missing, originalQuery) {
+  const preferred = agentRequest?.preferredDomains?.[0] || null;
+  const entities = Array.isArray(agentRequest?.entities) ? agentRequest.entities.slice(0, 2) : [];
+  const quote = (value) => {
+    const text = String(value || "").trim().replace(/"/g, "");
+    return text ? `"${text}"` : "";
+  };
+
+  const terms = (missing || []).slice(0, 5).map(quote).filter(Boolean);
+  return [
+    preferred ? `site:${preferred}` : "",
+    ...entities,
+    ...terms,
+    preferred ? "documentation" : originalQuery
+  ].filter(Boolean).join(" ");
+}
+
+function eligibleRows(rows, excludedDomains, preferredDomains, primaryOnly) {
+  return (rows || []).filter((row) => {
+    const host = hostname(row.url);
+    if (excludedDomains.some((domain) => domainMatches(host, domain))) return false;
+    if (primaryOnly && !preferredDomains.some((domain) => domainMatches(host, domain))) return false;
+    return true;
+  });
+}
+
+export async function liveSearch(query, options = {}) {
+  const q = String(query || "").trim();
+  if (!q) throw new Error("query_required");
+
+  const limit = Math.max(1, Math.min(Number(options.limit || 5), 20));
+  const maxDiscover = Math.max(limit, Math.min(Number(options.maxDiscover || 8), 20));
+  const maxCrawl = Math.max(1, Math.min(Number(options.maxCrawl || 5), 10));
+  const freshSeconds = Math.max(60, Math.min(Number(options.freshSeconds || 1800), 86400));
+
+  const discovery = await discoverWeb(q, {
+    limit: maxDiscover,
+    cacheTtl: Math.min(freshSeconds, 1800),
+    analysis: options.analysis || null
+  });
+
+  const excludedDomains = Array.isArray(options.agentRequest?.excludedDomains)
+    ? options.agentRequest.excludedDomains
+    : [];
+  const preferredDomains = Array.isArray(options.agentRequest?.preferredDomains)
+    ? options.agentRequest.preferredDomains
+    : [];
+  const primaryOnly =
+    options.agentRequest?.sourcePolicy === "primary" &&
+    preferredDomains.length > 0;
+
+  let allDiscoveryResults = eligibleRows(
+    discovery.results,
+    excludedDomains,
+    preferredDomains,
+    primaryOnly
+  );
+
+  const selected = allDiscoveryResults.slice(0, maxCrawl);
+  let crawlActivity = await crawlRows(selected, freshSeconds);
+  let candidateUrls = successfulCandidateUrls(crawlActivity);
   let ranked = {
     query: q,
     embeddingModel: null,
@@ -172,8 +205,98 @@ export async function liveSearch(query, options = {}) {
     } catch {}
   }
 
+  let evidence = evidenceCoverage(
+    options.agentRequest?.requiredEvidence || [],
+    ranked.results
+  );
+  let evidenceRetry = null;
+
+  const remainingCrawl = Math.max(0, maxCrawl - crawlActivity.length);
+  if (
+    options.agentRequest &&
+    !evidence.complete &&
+    evidence.missing.length &&
+    remainingCrawl > 0
+  ) {
+    const retryQuery = evidenceRetryQuery(options.agentRequest, evidence.missing, q);
+    const retryAnalysis = options.analysis ? {
+      ...options.analysis,
+      variants: [retryQuery],
+      strictPrecision: false,
+      precisionAnchors: [
+        ...new Set([
+          ...evidence.missing.map((x) => String(x).toLowerCase()),
+          ...(options.analysis.precisionAnchors || [])
+        ])
+      ].slice(0, 8),
+      planner: {
+        ...(options.analysis.planner || {}),
+        retry: "missing-evidence"
+      }
+    } : null;
+
+    try {
+      const retryDiscovery = await discoverWeb(q, {
+        limit: maxDiscover,
+        cacheTtl: Math.min(freshSeconds, 1800),
+        analysis: retryAnalysis,
+        maxMs: 18000
+      });
+
+      const alreadySeen = new Set(
+        allDiscoveryResults.map((row) => row.url)
+          .concat(crawlActivity.map((row) => row?.url).filter(Boolean))
+      );
+
+      const retryEligible = eligibleRows(
+        retryDiscovery.results,
+        excludedDomains,
+        preferredDomains,
+        primaryOnly
+      ).filter((row) => !alreadySeen.has(row.url));
+
+      const retrySelected = retryEligible.slice(0, remainingCrawl);
+      const retryActivity = await crawlRows(retrySelected, freshSeconds);
+      crawlActivity = [...crawlActivity, ...retryActivity];
+      allDiscoveryResults = [...allDiscoveryResults, ...retryEligible];
+      candidateUrls = successfulCandidateUrls(crawlActivity);
+
+      if (candidateUrls.length) {
+        try {
+          ranked = await searchIndex(q, {
+            limit,
+            urls: candidateUrls,
+            candidateLimit: 2000,
+            perDocument: 3
+          });
+        } catch {}
+      }
+
+      evidence = evidenceCoverage(
+        options.agentRequest.requiredEvidence || [],
+        ranked.results
+      );
+
+      evidenceRetry = {
+        attempted: true,
+        query: retryQuery,
+        missingBefore: retryAnalysis.precisionAnchors.slice(0, evidence.missing.length || undefined),
+        discovered: retryDiscovery.results.length,
+        crawled: retrySelected.length,
+        completeAfter: evidence.complete
+      };
+    } catch (error) {
+      evidenceRetry = {
+        attempted: true,
+        query: retryQuery,
+        error: String(error?.message || "evidence_retry_failed").slice(0, 240),
+        completeAfter: false
+      };
+    }
+  }
+
   const rankedUrls = new Set(ranked.results.map((row) => row.url));
-  const fallback = eligibleDiscoveryResults
+  const fallback = allDiscoveryResults
     .filter((row) => !rankedUrls.has(row.url))
     .slice(0, Math.max(0, limit - ranked.results.length))
     .map((row) => ({
@@ -189,10 +312,10 @@ export async function liveSearch(query, options = {}) {
     }));
 
   const combinedResults = [...ranked.results, ...fallback].slice(0, limit);
-  const evidence = evidenceCoverage(
-    options.agentRequest?.requiredEvidence || [],
-    ranked.results
-  );
+  evidence = {
+    ...evidence,
+    retry: evidenceRetry
+  };
 
   return {
     query: q,
@@ -219,7 +342,7 @@ export async function liveSearch(query, options = {}) {
       resultCount: discovery.results.length
     },
     crawl: {
-      attempted: selected.length,
+      attempted: crawlActivity.length,
       indexed: crawlActivity.filter((x) => x?.status === "indexed").length,
       reused: crawlActivity.filter((x) => x?.status === "reused").length,
       failed: crawlActivity.filter((x) => x?.status === "failed").length,
