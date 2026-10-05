@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 41;
+const DISCOVERY_CACHE_VERSION = 42;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 let nextAllowedAt = 0;
@@ -30,6 +30,43 @@ async function boundedValue(promise, ms, fallback = null) {
     clearTimeout(timer);
   }
 }
+
+async function firstUsefulValue(promises, predicate, ms, fallback = null) {
+  if (!promises.length) return fallback;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let remaining = promises.length;
+    const timer = setTimeout(() => finish(fallback), ms);
+
+    function finish(value) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    }
+
+    for (const promise of promises) {
+      Promise.resolve(promise)
+        .then((value) => {
+          if (settled) return;
+          if (predicate(value)) {
+            finish(value);
+            return;
+          }
+          remaining -= 1;
+          if (remaining === 0) finish(fallback);
+        })
+        .catch(() => {
+          if (settled) return;
+          remaining -= 1;
+          if (remaining === 0) finish(fallback);
+        });
+    }
+  });
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function normalizeResultUrl(raw) {
   if (!raw) return null;
@@ -1356,6 +1393,25 @@ async function discoverOfficialSitemap(analysis, limit) {
   return enriched;
 }
 
+function structuredOfficialRows(rows, analysis) {
+  const domains = Array.isArray(analysis.officialDomains)
+    ? analysis.officialDomains
+        .map((x) => String(x || "").toLowerCase().replace(/^www\./, ""))
+        .filter(Boolean)
+    : [];
+
+  if (!domains.length) return rows || [];
+
+  return (rows || []).filter((row) => {
+    try {
+      const host = new URL(row.url).hostname.toLowerCase().replace(/^www\./, "");
+      return domains.some((domain) => host === domain || host.endsWith(`.${domain}`));
+    } catch {
+      return false;
+    }
+  });
+}
+
 async function runVariant(query, analysis, limit) {
   const attempts = [];
   const rows = [];
@@ -1368,44 +1424,70 @@ async function runVariant(query, analysis, limit) {
   // technical pre-verifier here: preferred-domain enforcement and required
   // evidence validation happen after crawl in liveSearch().
   if (structuredPrimary) {
+    const startedAt = Date.now();
     const jobs = [];
 
     if (process.env.SEARCH_DISCOVERY_BASE_URL) {
       jobs.push(
-        boundedValue(discoverSearx(query, limit, "general"), 3800, [])
+        boundedValue(discoverSearx(query, limit, "general"), 2600, [])
           .then((found) => ({
             provider: "searxng-raw",
-            found
+            found: structuredOfficialRows(found, analysis),
+            durationMs: Date.now() - startedAt
           }))
       );
     }
 
     jobs.push(
-      boundedValue(discoverBingHtml(query, limit), 4800, [])
+      boundedValue(discoverBingHtml(query, limit), 3200, [])
         .then((found) => ({
           provider: "bing-html-raw",
-          found
+          found: structuredOfficialRows(found, analysis),
+          durationMs: Date.now() - startedAt
         }))
     );
 
+    // Hedge with DDG only if the fast providers have not produced a usable
+    // primary-domain result. The global search throttle makes an immediate
+    // DDG launch wasteful; a short stagger avoids that without adding latency
+    // when Bing/Searx succeed.
     jobs.push(
-      boundedValue(discoverDuckDuckGo(query, limit), 4800, [])
-        .then((found) => ({
+      (async () => {
+        await sleep(1200);
+        const found = await boundedValue(discoverDuckDuckGo(query, limit), 2600, []);
+        return {
           provider: found[0]?.provider || "duckduckgo-raw",
-          found
-        }))
+          found: structuredOfficialRows(found, analysis),
+          durationMs: Date.now() - startedAt
+        };
+      })()
     );
 
-    const settled = await Promise.all(jobs);
-    for (const result of settled) {
-      if (result.found.length) rows.push(...result.found);
+    const winner = await firstUsefulValue(
+      jobs,
+      (result) => Array.isArray(result?.found) && result.found.length > 0,
+      3900,
+      null
+    );
+
+    if (winner) {
+      rows.push(...winner.found);
       attempts.push({
-        provider: result.provider,
+        provider: winner.provider,
         query,
-        ok: result.found.length > 0
+        ok: true,
+        durationMs: winner.durationMs
       });
+      return { rows, attempts };
     }
 
+    attempts.push({
+      provider: "structured-provider-race",
+      query,
+      ok: false,
+      error: "no_primary_domain_result",
+      durationMs: Date.now() - startedAt
+    });
     return { rows, attempts };
   }
 
@@ -1668,28 +1750,50 @@ export async function discoverWeb(query, options = {}) {
         structuredPrimaryReady = fuse(collected, analysis, limit).length > 0;
       } else {
         structuredPrimaryRawAttempted = true;
-        const rawPromise = boundedValue(
+
+        const officialCandidate = (
+          quickOfficial.settled
+            ? Promise.resolve(quickOfficial.rows || [])
+            : officialPromise
+        ).then((rows) => ({
+          kind: "official",
+          rows,
+          attempts: [{
+            provider: rows[0]?.provider || "official-sitemap",
+            query: analysis.officialDomains?.[0] || analysis.brand,
+            ok: rows.length > 0
+          }]
+        }));
+
+        const rawCandidate = boundedValue(
           runVariant(firstVariant, analysis, limit),
-          Math.min(5200, remaining),
+          Math.min(4300, remaining),
           { rows: [], attempts: [{ provider: "structured-raw", query: firstVariant, ok: false, error: "timeout" }] }
+        ).then((result) => ({
+          kind: "raw",
+          rows: result.rows || [],
+          attempts: result.attempts || []
+        }));
+
+        const winner = await firstUsefulValue(
+          [officialCandidate, rawCandidate],
+          (candidate) => Array.isArray(candidate?.rows) && candidate.rows.length > 0,
+          Math.min(4500, remaining),
+          null
         );
 
-        const [official, raw] = await Promise.all([
-          quickOfficial.settled ? Promise.resolve(quickOfficial.rows || []) : officialPromise,
-          rawPromise
-        ]);
-
-        attempts.push({
-          provider: official[0]?.provider || "official-sitemap",
-          query: analysis.officialDomains?.[0] || analysis.brand,
-          ok: official.length > 0
-        });
-        attempts.push(...(raw.attempts || []));
-
-        if (official.length) collected.push(...official);
-        if (raw.rows?.length) collected.push(...raw.rows);
-
-        structuredPrimaryReady = fuse(collected, analysis, limit).length > 0;
+        if (winner) {
+          attempts.push(...winner.attempts);
+          collected.push(...winner.rows);
+          structuredPrimaryReady = fuse(collected, analysis, limit).length > 0;
+        } else {
+          attempts.push({
+            provider: "structured-primary-race",
+            query: firstVariant,
+            ok: false,
+            error: "no_primary_result"
+          });
+        }
       }
     } else {
       attempts.push({
