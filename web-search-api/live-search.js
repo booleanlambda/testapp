@@ -200,18 +200,23 @@ function successfulCandidateUrls(activity) {
 
 function evidenceRetryQuery(agentRequest, missing, originalQuery) {
   const preferred = agentRequest?.preferredDomains?.[0] || null;
-  const entities = Array.isArray(agentRequest?.entities) ? agentRequest.entities.slice(0, 2) : [];
+  const entities = Array.isArray(agentRequest?.entities) ? agentRequest.entities : [];
+  const concepts = Array.isArray(agentRequest?.concepts) ? agentRequest.concepts : [];
   const quote = (value) => {
     const text = String(value || "").trim().replace(/"/g, "");
-    return text ? `"${text}"` : "";
+    return text ? (/\s/.test(text) ? `"${text}"` : text) : "";
   };
 
-  const terms = (missing || []).slice(0, 5).map(quote).filter(Boolean);
+  const coreEntity = entities.length > 1
+    ? entities[entities.length - 1]
+    : entities[0] || "";
+  const missingTerm = (missing || [])[0] || concepts[0] || "";
+
   return [
     preferred ? `site:${preferred}` : "",
-    ...entities,
-    ...terms,
-    preferred ? "documentation" : originalQuery
+    coreEntity,
+    quote(missingTerm),
+    preferred ? "" : originalQuery
   ].filter(Boolean).join(" ");
 }
 
