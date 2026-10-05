@@ -9,6 +9,59 @@ function isFresh(document, freshSeconds) {
   return ageMs >= 0 && ageMs <= freshSeconds * 1000;
 }
 
+function hostname(rawUrl) {
+  try {
+    return new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function domainMatches(host, domain) {
+  const d = String(domain || "").toLowerCase().replace(/^www\./, "");
+  return Boolean(d) && (host === d || host.endsWith(`.${d}`));
+}
+
+function normalizeEvidenceText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function evidenceCoverage(required, rows) {
+  const terms = Array.isArray(required) ? required.filter(Boolean) : [];
+  if (!terms.length) {
+    return {
+      required: [],
+      matched: [],
+      missing: [],
+      complete: true
+    };
+  }
+
+  const evidence = normalizeEvidenceText(
+    rows.map((row) => `${row.title || ""}\n${row.content || ""}\n${row.url || ""}`).join("\n")
+  );
+
+  const matched = [];
+  const missing = [];
+
+  for (const term of terms) {
+    const needle = normalizeEvidenceText(term);
+    if (needle && evidence.includes(needle)) matched.push(term);
+    else missing.push(term);
+  }
+
+  return {
+    required: terms,
+    matched,
+    missing,
+    complete: missing.length === 0
+  };
+}
+
 async function mapLimit(items, limit, worker) {
   const results = new Array(items.length);
   let next = 0;
@@ -38,10 +91,20 @@ export async function liveSearch(query, options = {}) {
 
   const discovery = await discoverWeb(q, {
     limit: maxDiscover,
-    cacheTtl: Math.min(freshSeconds, 1800)
+    cacheTtl: Math.min(freshSeconds, 1800),
+    analysis: options.analysis || null
   });
 
-  const selected = discovery.results.slice(0, maxCrawl);
+  const excludedDomains = Array.isArray(options.agentRequest?.excludedDomains)
+    ? options.agentRequest.excludedDomains
+    : [];
+
+  const eligibleDiscoveryResults = discovery.results.filter((row) => {
+    const host = hostname(row.url);
+    return !excludedDomains.some((domain) => domainMatches(host, domain));
+  });
+
+  const selected = eligibleDiscoveryResults.slice(0, maxCrawl);
   const crawlActivity = await mapLimit(selected, 2, async (row) => {
     try {
       const existing = await getDocument(row.url);
@@ -102,7 +165,7 @@ export async function liveSearch(query, options = {}) {
   }
 
   const rankedUrls = new Set(ranked.results.map((row) => row.url));
-  const fallback = discovery.results
+  const fallback = eligibleDiscoveryResults
     .filter((row) => !rankedUrls.has(row.url))
     .slice(0, Math.max(0, limit - ranked.results.length))
     .map((row) => ({
@@ -117,9 +180,23 @@ export async function liveSearch(query, options = {}) {
       fallback: true
     }));
 
+  const combinedResults = [...ranked.results, ...fallback].slice(0, limit);
+  const evidence = evidenceCoverage(
+    options.agentRequest?.requiredEvidence || [],
+    ranked.results
+  );
+
   return {
     query: q,
     mode: "live",
+    protocol: options.agentRequest?.protocol || null,
+    agent: options.agentRequest ? {
+      goal: options.agentRequest.goal,
+      sourcePolicy: options.agentRequest.sourcePolicy,
+      depth: options.agentRequest.depth,
+      preferredDomains: options.agentRequest.preferredDomains,
+      excludedDomains: options.agentRequest.excludedDomains
+    } : null,
     discovery: {
       provider: discovery.provider,
       intent: discovery.intent,
@@ -141,6 +218,7 @@ export async function liveSearch(query, options = {}) {
       activity: crawlActivity
     },
     embeddingModel: ranked.embeddingModel,
-    results: [...ranked.results, ...fallback].slice(0, limit)
+    evidence,
+    results: combinedResults
   };
 }
