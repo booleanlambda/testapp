@@ -455,6 +455,74 @@ server.listen(port, "0.0.0.0", async () => {
 
   (async () => {
     const startedAt = Date.now();
+    const query = "In Node.js, why can recursive process.nextTick starve I/O, where do Promise callbacks and queueMicrotask run relative to nextTick, and when does setImmediate run relative to setTimeout(0) after an I/O callback?";
+    try {
+      const result = await withTimeout(
+        liveSearch(query, {
+          limit: 12,
+          maxDiscover: 12,
+          maxCrawl: 6,
+          freshSeconds: 60
+        }),
+        80000
+      );
+
+      const rankedRows = (result.results || []).filter((row) => row.fallback !== true);
+      const evidence = rankedRows.map((row) => String(row.content || "")).join("\n").toLowerCase();
+      const checks = {
+        discovered: Number(result.discovery?.resultCount || 0) > 0,
+        technicalIntent: String(result.discovery?.intent || "").startsWith("technical"),
+        freshlyIndexed: Number(result.crawl?.indexed || 0) > 0 || Number(result.crawl?.reused || 0) > 0,
+        ranked: rankedRows.length > 0,
+        officialNodeSource: rankedRows.some((row) => /(^|\.)nodejs\.org$/i.test((() => { try { return new URL(row.url || "").hostname; } catch { return ""; } })())),
+        nextTick: /process\.nexttick|nexttick/.test(evidence),
+        starvation: /starv|prevent.*i\/o|i\/o.*prevent|recursive/.test(evidence),
+        microtask: /queuemicrotask|microtask/.test(evidence),
+        promise: /promise/.test(evidence),
+        setImmediate: /setimmediate/.test(evidence),
+        setTimeout: /settimeout/.test(evidence),
+        ioOrdering: /i\/o|poll phase|after.*i\/o|within an i\/o cycle|event loop/.test(evidence)
+      };
+
+      const passed = Object.values(checks).every(Boolean);
+      const payload = {
+        name: "node_event_loop_semantics_full_pipeline",
+        query,
+        passed,
+        durationMs: Date.now() - startedAt,
+        discovery: result.discovery,
+        crawl: result.crawl,
+        embeddingModel: result.embeddingModel,
+        checks,
+        results: (result.results || []).slice(0, 12).map((row) => ({
+          title: row.title,
+          url: row.url,
+          score: row.score,
+          semanticScore: row.semanticScore,
+          lexicalScore: row.lexicalScore,
+          fallback: row.fallback || false,
+          excerpt: String(row.content || "").slice(0, 520)
+        }))
+      };
+
+      if (passed) {
+        console.log("RIGID_LIVE_PASS", JSON.stringify(payload));
+      } else {
+        console.error("RIGID_LIVE_FAIL", JSON.stringify(payload));
+      }
+    } catch (error) {
+      console.error("RIGID_LIVE_FAIL", JSON.stringify({
+        name: "node_event_loop_semantics_full_pipeline",
+        query,
+        passed: false,
+        durationMs: Date.now() - startedAt,
+        error: error?.message || String(error)
+      }));
+    }
+  })();
+
+  (async () => {
+    const startedAt = Date.now();
     const query = "Why can Kubernetes Server-Side Apply return field conflicts, how are managedFields used, and what changes when force conflicts is enabled?";
     try {
       const result = await withTimeout(
