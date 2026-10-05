@@ -78,15 +78,15 @@ function queryVariants(query, request, baseline) {
   };
 
   if (request.preferredDomains.length && focus) {
-    const distinctive = [...new Set([...evidence, ...concepts])]
-      .slice(0, 4)
-      .map(quoteDistinctive)
-      .filter(Boolean);
+    const coreEntity = entities.length > 1
+      ? entities[entities.length - 1]
+      : entities[0] || "";
+    const strongestConcept = concepts[0] || evidence[0] || "";
     variants.unshift(
       [
         `site:${request.preferredDomains[0]}`,
-        ...entities,
-        ...distinctive
+        coreEntity,
+        quoteDistinctive(strongestConcept)
       ].filter(Boolean).join(" ")
     );
   }
