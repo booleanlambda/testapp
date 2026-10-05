@@ -361,11 +361,27 @@ export function relevanceScore(row, analysis) {
   if (needed > 0 && anchorHits === 0) score -= 8;
   else if (needed > 1 && anchorHits < needed) score -= 2;
 
+  const structuredSitemapCandidate =
+    analysis.planner?.provider === "agent-structured" &&
+    /^official-sitemap(?:-cache)?$/.test(String(row.provider || ""));
+
   const precisionHits = precisionHitSet.size;
   if ((analysis.precisionAnchors || []).length) {
-    if (precisionHits === 0) score -= 12;
-    else if (analysis.strictPrecision && precisionHits < Math.min(2, analysis.precisionAnchors.length)) score -= 6;
+    // Sitemap candidates are only URL-level hypotheses. The structured-agent
+    // path validates required evidence after the page is crawled, so do not
+    // reject a primary-source URL merely because its URL/title lacks the
+    // exact evidence phrase.
+    if (precisionHits === 0 && !structuredSitemapCandidate) score -= 12;
+    else if (
+      analysis.strictPrecision &&
+      !structuredSitemapCandidate &&
+      precisionHits < Math.min(2, analysis.precisionAnchors.length)
+    ) {
+      score -= 6;
+    }
   }
+
+  if (structuredSitemapCandidate) score += 5;
 
   if (analysis.brand) {
     try {
