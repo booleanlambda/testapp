@@ -377,7 +377,8 @@ const server = http.createServer(async (req, res) => {
       "invalid_agent_intent",
       "invalid_agent_goal",
       "invalid_source_policy",
-      "invalid_search_depth"
+      "invalid_search_depth",
+      "invalid_agent_output"
     ]);
     sendJson(res, clientErrors.has(message) ? 400 : 500, {
       error: message.slice(0, 500)
