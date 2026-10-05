@@ -5,6 +5,8 @@ import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
 const DISCOVERY_CACHE_VERSION = 41;
+const OFFICIAL_CORPUS_CACHE_VERSION = 1;
+const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -1134,6 +1136,30 @@ async function discoverOfficialSitemap(analysis, limit) {
       ];
 
   const sourceLabel = analysis.brand || preferredDomains[0] || "official";
+  const corpusKey = sha256(JSON.stringify({
+    kind: "official-corpus",
+    version: OFFICIAL_CORPUS_CACHE_VERSION,
+    domain: preferredDomains[0] || analysis.brand
+  }));
+
+  const cachedCorpus = await boundedValue(getDiscoveryCache(corpusKey), 900, null);
+  if (cachedCorpus?.urls?.length) {
+    return cachedCorpus.urls
+      .map((url) => ({ url, score: scoreOfficialUrl(url, analysis) }))
+      .filter((row) => row.score > 2)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.min(Math.max(limit, 5), 6))
+      .map((row, index) => ({
+        title: `Official ${sourceLabel} candidate`,
+        url: row.url,
+        snippet: `Primary-source candidate selected from cached ${sourceLabel} site corpus.`,
+        publishedAt: null,
+        provider: "official-sitemap-cache",
+        rank: index + 1,
+        queryEvidence: []
+      }));
+  }
+
   let root = null;
   let robots = "";
 
@@ -1159,6 +1185,7 @@ async function discoverOfficialSitemap(analysis, limit) {
   }));
   const seen = new Set();
   const pages = [];
+  const corpusUrls = new Set();
   const deadline = Date.now() + 9000;
 
   while (queue.length && seen.size < 8 && pages.length < 50 && Date.now() < deadline) {
@@ -1194,11 +1221,20 @@ async function discoverOfficialSitemap(analysis, limit) {
     }
 
     if (parsed.type === "urlset") {
-      for (const url of parsed.locs) {
+      for (const url of parsed.locs.slice(0, 5000)) {
+        corpusUrls.add(url);
         const score = scoreOfficialUrl(url, analysis, item.score * 0.15);
         if (score > 2) pages.push({ url, score });
       }
     }
+  }
+
+  if (corpusUrls.size) {
+    void setDiscoveryCache(
+      corpusKey,
+      { urls: [...corpusUrls].slice(0, 5000), root, cachedAt: new Date().toISOString() },
+      OFFICIAL_CORPUS_TTL_SECONDS
+    ).catch(() => {});
   }
 
   const candidates = pages
@@ -1571,8 +1607,8 @@ export async function discoverWeb(query, options = {}) {
           )
         : [];
       attempts.push({
-        provider: "official-sitemap",
-        query: analysis.brand,
+        provider: official[0]?.provider || "official-sitemap",
+        query: analysis.officialDomains?.[0] || analysis.brand,
         ok: official.length > 0,
         error: remaining <= 500 ? "budget_exhausted" : undefined
       });
