@@ -464,9 +464,13 @@ export async function liveSearch(query, options = {}) {
   const maxCrawl = Math.max(1, Math.min(Number(options.maxCrawl || 5), 10));
   const freshSeconds = Math.max(60, Math.min(Number(options.freshSeconds || 1800), 86400));
 
+  const discoveryCacheTtl = options.agentRequest
+    ? 21600
+    : Math.min(freshSeconds, 1800);
+
   const discovery = await discoverWeb(q, {
     limit: maxDiscover,
-    cacheTtl: Math.min(freshSeconds, 1800),
+    cacheTtl: discoveryCacheTtl,
     analysis: options.analysis || null
   });
 
@@ -569,7 +573,7 @@ export async function liveSearch(query, options = {}) {
     try {
       const retryDiscovery = await discoverWeb(q, {
         limit: maxDiscover,
-        cacheTtl: Math.min(freshSeconds, 1800),
+        cacheTtl: discoveryCacheTtl,
         analysis: retryAnalysis,
         maxMs: 18000
       });
