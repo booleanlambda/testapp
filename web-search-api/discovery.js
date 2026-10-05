@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 44;
+const DISCOVERY_CACHE_VERSION = 43;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -236,36 +236,6 @@ async function discoverBingNews(query, limit) {
   });
 
   return normalizeRows(rows.slice(0, Math.max(limit, 20)), "bing-news-rss");
-}
-
-async function discoverBingRss(query, limit) {
-  await throttle("bing", 250);
-  const url = new URL("https://www.bing.com/search");
-  url.searchParams.set("q", query);
-  url.searchParams.set("format", "rss");
-  url.searchParams.set("count", "20");
-
-  const response = await fetch(url, {
-    headers: {
-      "user-agent": DISCOVERY_UA,
-      accept: "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.1"
-    },
-    signal: AbortSignal.timeout(3200)
-  });
-  if (!response.ok) throw new Error(`bing_rss_${response.status}`);
-
-  const xml = await response.text();
-  const $ = cheerio.load(xml, { xmlMode: true });
-  const rows = [];
-  $("item").each((_, item) => {
-    rows.push({
-      title: $(item).find("title").first().text().trim(),
-      url: $(item).find("link").first().text().trim(),
-      snippet: $(item).find("description").first().text().trim()
-    });
-  });
-
-  return normalizeRows(rows.slice(0, Math.max(limit, 20)), "bing-rss");
 }
 
 async function discoverBingHtml(query, limit) {
@@ -1471,33 +1441,22 @@ async function runVariant(query, analysis, limit) {
     }
 
     jobs.push(
-      boundedValue(discoverBingRss(query, limit), 2600, [])
+      boundedValue(discoverBingHtml(query, limit), 3200, [])
         .then((found) => ({
-          provider: "bing-rss-raw",
+          provider: "bing-html-raw",
           found: structuredOfficialRows(found, analysis),
           durationMs: Date.now() - startedAt
         }))
     );
 
-    // HTML is the compatibility hedge if the smaller RSS representation is
-    // unavailable or does not contain a primary-domain result.
+    // Hedge with DDG only if the fast providers have not produced a usable
+    // primary-domain result. The global search throttle makes an immediate
+    // DDG launch wasteful; a short stagger avoids that without adding latency
+    // when Bing/Searx succeed.
     jobs.push(
       (async () => {
-        await sleep(650);
-        const found = await boundedValue(discoverBingHtml(query, limit), 3000, []);
-        return {
-          provider: "bing-html-raw",
-          found: structuredOfficialRows(found, analysis),
-          durationMs: Date.now() - startedAt
-        };
-      })()
-    );
-
-    // DDG is a later independent-provider hedge.
-    jobs.push(
-      (async () => {
-        await sleep(1400);
-        const found = await boundedValue(discoverDuckDuckGo(query, limit), 2400, []);
+        await sleep(1200);
+        const found = await boundedValue(discoverDuckDuckGo(query, limit), 2600, []);
         return {
           provider: found[0]?.provider || "duckduckgo-raw",
           found: structuredOfficialRows(found, analysis),
@@ -1509,7 +1468,7 @@ async function runVariant(query, analysis, limit) {
     const winner = await firstUsefulValue(
       jobs,
       (result) => Array.isArray(result?.found) && result.found.length > 0,
-      3800,
+      3900,
       null
     );
 
