@@ -528,20 +528,6 @@ export async function liveSearch(query, options = {}) {
         results: []
       };
     }
-  } else if (!fastPathUsed && options.agentRequest && requiredEvidence.length) {
-    const firstPass = await crawlUntilEvidence({
-      rows: selected,
-      freshSeconds,
-      query: q,
-      activity: [],
-      maxTotal: maxCrawl,
-      requiredEvidence,
-      limit,
-      perDocument: discovery.strictPrecision ? 4 : 2
-    });
-    crawlActivity = firstPass.activity;
-    ranked = firstPass.ranked;
-    evidence = firstPass.evidence;
   } else {
     crawlActivity = await crawlRows(selected, freshSeconds);
     ranked = await rankUrls(
@@ -615,6 +601,7 @@ export async function liveSearch(query, options = {}) {
 
         crawlActivity = [...crawlActivity, ...retryPass.activity];
         fastPages = [...fastPages, ...retryPass.pages];
+        fastPathUsed = fastPages.length > 0;
         evidence = evidenceCoverage(
           options.agentRequest.requiredEvidence || [],
           fastEvidenceRows(fastPages)
