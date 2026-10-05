@@ -1197,7 +1197,7 @@ async function discoverOfficialSitemap(analysis, limit) {
   const corpusUrls = new Set();
   const deadline = Date.now() + 9000;
 
-  while (queue.length && seen.size < 8 && pages.length < 50 && Date.now() < deadline) {
+  while (queue.length && seen.size < 16 && pages.length < 80 && Date.now() < deadline) {
     queue.sort((a, b) => b.score - a.score);
     const item = queue.shift();
     if (!item || seen.has(item.url)) continue;
@@ -1234,6 +1234,30 @@ async function discoverOfficialSitemap(analysis, limit) {
         corpusUrls.add(url);
         const score = scoreOfficialUrl(url, analysis, item.score * 0.15);
         if (score > 2) pages.push({ url, score });
+
+        // Some documentation sites expose a root sitemap containing only
+        // section/version roots, with the real page inventory in a nested
+        // sitemap under each shallow directory (for example /3/sitemap.xml).
+        // Probe those roots generically instead of assuming every urlset entry
+        // is a terminal content page.
+        try {
+          const parsedUrl = new URL(url);
+          const segments = parsedUrl.pathname.split("/").filter(Boolean);
+          if (
+            item.depth < 2 &&
+            parsedUrl.pathname.endsWith("/") &&
+            segments.length <= 2
+          ) {
+            const nested = new URL("sitemap.xml", parsedUrl).toString();
+            if (!seen.has(nested)) {
+              queue.push({
+                url: nested,
+                depth: item.depth + 1,
+                score: scoreOfficialUrl(nested, analysis, score * 0.2) + 4
+              });
+            }
+          }
+        } catch {}
       }
     }
   }
