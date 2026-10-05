@@ -1653,7 +1653,7 @@ export async function discoverWeb(query, options = {}) {
         officialPromise.then((rows) => ({ settled: true, rows })),
         new Promise((resolve) => setTimeout(
           () => resolve({ settled: false, rows: null }),
-          180
+          900
         ))
       ]);
 
