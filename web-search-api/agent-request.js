@@ -167,6 +167,8 @@ export function parseAgentSearchRequest(body = {}) {
       model: null,
       protocol: AGENT_SEARCH_PROTOCOL
     },
+    sourcePolicy,
+    requiredEvidence,
     officialDomains: preferredDomains
   };
 
