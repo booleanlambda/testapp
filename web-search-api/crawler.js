@@ -396,10 +396,10 @@ function parseRobots(text) {
   return rules;
 }
 
-async function robotsRules(origin, cache) {
+async function robotsRules(origin, cache, options = {}) {
   if (cache.has(origin)) return cache.get(origin);
   try {
-    const response = await fetchSafe(new URL("/robots.txt", origin).toString());
+    const response = await fetchSafe(new URL("/robots.txt", origin).toString(), options);
     const rules = parseRobots(response.body);
     cache.set(origin, rules);
     return rules;
@@ -409,9 +409,9 @@ async function robotsRules(origin, cache) {
   }
 }
 
-async function allowedByRobots(rawUrl, cache) {
+async function allowedByRobots(rawUrl, cache, options = {}) {
   const u = new URL(rawUrl);
-  const rules = await robotsRules(u.origin, cache);
+  const rules = await robotsRules(u.origin, cache, options);
   return !rules.some((rule) => u.pathname.startsWith(rule));
 }
 
@@ -425,7 +425,13 @@ export async function fetchPageFast(startUrl, options = {}) {
   const start = normalizeStart((await validatePublicUrl(startUrl)).toString());
   const robotsCache = new Map();
 
-  if (respectRobots && !(await allowedByRobots(start, robotsCache))) {
+  if (
+    respectRobots &&
+    !(await allowedByRobots(start, robotsCache, {
+      signal: options.signal,
+      timeoutMs: Math.min(timeoutMs, 1500)
+    }))
+  ) {
     throw new Error("robots_disallowed");
   }
 
