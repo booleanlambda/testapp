@@ -5,7 +5,7 @@ import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
 const DISCOVERY_CACHE_VERSION = 41;
-const OFFICIAL_CORPUS_CACHE_VERSION = 2;
+const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 let nextAllowedAt = 0;
 
@@ -1231,15 +1231,14 @@ async function discoverOfficialSitemap(analysis, limit) {
 
     if (parsed.type === "urlset") {
       for (const url of parsed.locs.slice(0, 5000)) {
-        corpusUrls.add(url);
         const score = scoreOfficialUrl(url, analysis, item.score * 0.15);
-        if (score > 2) pages.push({ url, score });
+        let navigationOnly = false;
 
         // Some documentation sites expose a root sitemap containing only
         // section/version roots, with the real page inventory in a nested
         // sitemap under each shallow directory (for example /3/sitemap.xml).
-        // Probe those roots generically instead of assuming every urlset entry
-        // is a terminal content page.
+        // Treat such roots as navigation only so they cannot consume the
+        // structured agent's crawl budget ahead of the actual content pages.
         try {
           const parsedUrl = new URL(url);
           const segments = parsedUrl.pathname.split("/").filter(Boolean);
@@ -1248,6 +1247,7 @@ async function discoverOfficialSitemap(analysis, limit) {
             parsedUrl.pathname.endsWith("/") &&
             segments.length <= 2
           ) {
+            navigationOnly = true;
             const nested = new URL("sitemap.xml", parsedUrl).toString();
             if (!seen.has(nested)) {
               queue.push({
@@ -1258,6 +1258,10 @@ async function discoverOfficialSitemap(analysis, limit) {
             }
           }
         } catch {}
+
+        if (navigationOnly) continue;
+        corpusUrls.add(url);
+        if (score > 2) pages.push({ url, score });
       }
     }
   }
