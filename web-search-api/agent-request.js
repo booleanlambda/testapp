@@ -156,6 +156,21 @@ export function parseAgentSearchRequest(body = {}) {
 
   if (request.output !== "passages") throw new Error("invalid_agent_output");
 
+  const suppliedSemanticTokens = new Set(
+    [...entities, ...concepts, ...requiredEvidence]
+      .flatMap((value) => String(value || "").toLowerCase().match(/[a-z0-9][a-z0-9._-]*/g) || [])
+  );
+
+  const queryOnlyAnchors = (baseline.anchors || [])
+    .filter((anchor) => {
+      const token = String(anchor || "").toLowerCase();
+      if (!token || suppliedSemanticTokens.has(token)) return false;
+      if (/^20\d{2}(?:[-/]\d{1,2}){0,2}$/.test(token)) return false;
+      if (/^\d+$/.test(token)) return false;
+      return token.length >= 4;
+    })
+    .slice(0, 6);
+
   const anchorInput = [
     ...entities,
     ...concepts,
@@ -185,7 +200,9 @@ export function parseAgentSearchRequest(body = {}) {
       protocol: AGENT_SEARCH_PROTOCOL
     },
     sourcePolicy,
+    goal,
     requiredEvidence,
+    queryOnlyAnchors,
     officialDomains: preferredDomains
   };
 
