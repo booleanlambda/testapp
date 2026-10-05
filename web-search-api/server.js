@@ -6,6 +6,7 @@ import { crawlSite, validatePublicUrl } from "./crawler.js";
 import { searchIndex } from "./search.js";
 import { liveSearch } from "./live-search.js";
 import { discoverWeb } from "./discovery.js";
+import { AGENT_SEARCH_PROTOCOL, agentSearchSchema, parseAgentSearchRequest } from "./agent-request.js";
 import {
   createJob,
   ensureIndexes,
@@ -219,6 +220,8 @@ const server = http.createServer(async (req, res) => {
           crawl: "POST /crawl",
           crawlStatus: "GET /crawl/:jobId",
           search: "POST /search or GET /search?q=...",
+          agentSearch: `POST /search with protocol=${AGENT_SEARCH_PROTOCOL}`,
+          agentSchema: "GET /agent-search-schema",
           discover: "GET /discover?q=..."
         },
         limits: {
@@ -227,6 +230,11 @@ const server = http.createServer(async (req, res) => {
           searchMaxResults: 20
         }
       });
+      return;
+    }
+
+    if (req.method === "GET" && path === "/agent-search-schema") {
+      sendJson(res, 200, agentSearchSchema());
       return;
     }
 
@@ -321,8 +329,14 @@ const server = http.createServer(async (req, res) => {
 
     if ((req.method === "POST" || req.method === "GET") && path === "/search") {
       const body = req.method === "POST" ? await readJson(req) : {};
-      const query = body.query || body.q || requestUrl.searchParams.get("q");
-      const limit = body.limit || requestUrl.searchParams.get("limit") || 5;
+      if (body.protocol && body.protocol !== AGENT_SEARCH_PROTOCOL) {
+        sendJson(res, 400, { error: "unsupported_search_protocol", supported: AGENT_SEARCH_PROTOCOL });
+        return;
+      }
+
+      const structured = req.method === "POST" ? parseAgentSearchRequest(body) : null;
+      const query = structured?.request.query || body.query || body.q || requestUrl.searchParams.get("q");
+      const limit = structured?.request.limit || body.limit || requestUrl.searchParams.get("limit") || 5;
       const mode =
         body.mode ||
         requestUrl.searchParams.get("mode") ||
@@ -341,9 +355,11 @@ const server = http.createServer(async (req, res) => {
 
       const result = await liveSearch(query, {
         limit,
-        maxDiscover: body.maxDiscover || requestUrl.searchParams.get("maxDiscover") || 8,
-        maxCrawl: body.maxCrawl || requestUrl.searchParams.get("maxCrawl") || 5,
-        freshSeconds: body.freshSeconds || requestUrl.searchParams.get("freshSeconds") || 1800
+        maxDiscover: structured?.request.maxDiscover || body.maxDiscover || requestUrl.searchParams.get("maxDiscover") || 8,
+        maxCrawl: structured?.request.maxCrawl || body.maxCrawl || requestUrl.searchParams.get("maxCrawl") || 5,
+        freshSeconds: structured?.request.freshSeconds || body.freshSeconds || requestUrl.searchParams.get("freshSeconds") || 1800,
+        analysis: structured?.analysis || null,
+        agentRequest: structured?.request || null
       });
       sendJson(res, 200, result);
       return;
@@ -357,7 +373,11 @@ const server = http.createServer(async (req, res) => {
       "request_too_large",
       "invalid_url",
       "unsupported_protocol",
-      "private_host_blocked"
+      "private_host_blocked",
+      "invalid_agent_intent",
+      "invalid_agent_goal",
+      "invalid_source_policy",
+      "invalid_search_depth"
     ]);
     sendJson(res, clientErrors.has(message) ? 400 : 500, {
       error: message.slice(0, 500)
@@ -587,43 +607,59 @@ server.listen(port, "0.0.0.0", async () => {
 
   (async () => {
     const startedAt = Date.now();
-    const query = "What does copy-on-write mean for Redis forked background saves, and why can Transparent Huge Pages make latency spikes worse?";
+    const body = {
+      protocol: AGENT_SEARCH_PROTOCOL,
+      query: "What does copy-on-write mean for Redis forked background saves, and why can Transparent Huge Pages make latency spikes worse?",
+      intent: "technical",
+      goal: "explain",
+      entities: ["Redis"],
+      concepts: ["copy-on-write", "fork", "Transparent Huge Pages", "latency"],
+      source_policy: "primary",
+      preferred_domains: ["redis.io"],
+      required_evidence: ["copy-on-write", "fork", "Transparent Huge Pages", "latency"],
+      depth: "deep",
+      max_results: 10,
+      crawl_budget: 6
+    };
+    const structured = parseAgentSearchRequest(body);
+    const query = structured.request.query;
+
     try {
       const result = await withTimeout(
         liveSearch(query, {
-          limit: 10,
-          maxDiscover: 12,
-          maxCrawl: 6,
-          freshSeconds: 60
+          limit: structured.request.limit,
+          maxDiscover: structured.request.maxDiscover,
+          maxCrawl: structured.request.maxCrawl,
+          freshSeconds: 60,
+          analysis: structured.analysis,
+          agentRequest: structured.request
         }),
         70000
       );
 
       const rankedRows = (result.results || []).filter((row) => row.fallback !== true);
-      const evidence = rankedRows.map((row) => String(row.content || "")).join("\n").toLowerCase();
       const planner = result.discovery?.planner || {};
       const checks = {
         discovered: Number(result.discovery?.resultCount || 0) > 0,
-        llmPlannerUsed: planner.provider === "llm",
-        lightweightPlanner: planner.model ? !/(?:^|[-_/])(31|34|40|70|72|405)b(?:[-_/]|$)/i.test(planner.model) : false,
+        structuredPlanner: planner.provider === "agent-structured",
+        noPlannerModel: planner.model == null,
         technicalIntent: String(result.discovery?.intent || "").startsWith("technical"),
         freshlyIndexed: Number(result.crawl?.indexed || 0) > 0 || Number(result.crawl?.reused || 0) > 0,
         ranked: rankedRows.length > 0,
         redisSource: rankedRows.some((row) => /(^|\.)redis\.io$/i.test((() => { try { return new URL(row.url || "").hostname; } catch { return ""; } })())),
-        copyOnWrite: /copy[- ]on[- ]write|cow/.test(evidence),
-        fork: /fork|bgsave|background save|background saving/.test(evidence),
-        transparentHugePages: /transparent huge pages|transparent_hugepage|thp/.test(evidence),
-        latency: /latency|latencies|stall|spike/.test(evidence)
+        evidenceComplete: result.evidence?.complete === true
       };
 
       const passed = Object.values(checks).every(Boolean);
       const payload = {
-        name: "redis_cow_thp_llm_planner_full_pipeline",
+        name: "redis_cow_thp_structured_agent_full_pipeline",
         query,
         passed,
         durationMs: Date.now() - startedAt,
+        protocol: result.protocol,
         discovery: result.discovery,
         crawl: result.crawl,
+        evidence: result.evidence,
         embeddingModel: result.embeddingModel,
         checks,
         results: (result.results || []).slice(0, 10).map((row) => ({
@@ -644,7 +680,7 @@ server.listen(port, "0.0.0.0", async () => {
       }
     } catch (error) {
       console.error("RIGID_LIVE_FAIL", JSON.stringify({
-        name: "redis_cow_thp_llm_planner_full_pipeline",
+        name: "redis_cow_thp_structured_agent_full_pipeline",
         query,
         passed: false,
         durationMs: Date.now() - startedAt,
