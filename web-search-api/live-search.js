@@ -133,7 +133,7 @@ function fastEvidenceRows(pages) {
   }));
 }
 
-function pageMatchesQueryContext(page, anchors = []) {
+function pageMatchesQueryContext(page, anchors = [], phrase = null) {
   const terms = [...new Set(
     (anchors || [])
       .map((value) => normalizeEvidenceText(value))
@@ -145,11 +145,20 @@ function pageMatchesQueryContext(page, anchors = []) {
   const haystack = normalizeEvidenceText(
     `${page?.title || ""}\n${page?.text || ""}\n${page?.url || ""}`
   );
+  const normalizedPhrase = normalizeEvidenceText(phrase);
+  if (normalizedPhrase && !haystack.includes(normalizedPhrase)) {
+    return {
+      ok: false,
+      matched: terms.filter((term) => haystack.includes(term)),
+      required: `phrase:${normalizedPhrase}`
+    };
+  }
+
   const matched = terms.filter((term) => haystack.includes(term));
-  const required = terms.length >= 2 ? 2 : 1;
+  const required = normalizedPhrase ? 0 : (terms.length >= 2 ? 2 : 1);
 
   return {
-    ok: matched.length >= required,
+    ok: normalizedPhrase ? true : matched.length >= required,
     matched,
     required
   };
@@ -230,6 +239,7 @@ async function fetchUntilEvidenceFast({
   maxTotal,
   concurrency = 2,
   queryContextAnchors = [],
+  queryContextPhrase = null,
   enforceQueryContext = false
 }) {
   const pages = [];
@@ -266,7 +276,7 @@ async function fetchUntilEvidenceFast({
 
     if (result.page) {
       const context = enforceQueryContext
-        ? pageMatchesQueryContext(result.page, queryContextAnchors)
+        ? pageMatchesQueryContext(result.page, queryContextAnchors, queryContextPhrase)
         : { ok: true, matched: [], required: 0 };
 
       if (context.ok) {
@@ -547,6 +557,7 @@ export async function liveSearch(query, options = {}) {
       maxTotal: maxCrawl,
       concurrency: requiredEvidence.length ? 2 : 3,
       queryContextAnchors: options.analysis?.queryOnlyAnchors || [],
+      queryContextPhrase: options.analysis?.queryContextPhrase || null,
       enforceQueryContext:
         options.analysis?.planner?.provider === "agent-structured" &&
         options.agentRequest?.sourcePolicy === "broad_web"
