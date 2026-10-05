@@ -681,6 +681,27 @@ function directOfficialTechnicalUrls(analysis) {
     }
   }
 
+  if (terms.has("node") || terms.has("node.js") || terms.has("nodejs")) {
+    const eventLoopFocused =
+      anchors.has("process.nexttick") ||
+      anchors.has("queuemicrotask") ||
+      anchors.has("setimmediate") ||
+      anchors.has("settimeout") ||
+      anchors.has("microtask") ||
+      (analysis.phrases || []).includes("event loop");
+
+    if (eventLoopFocused) {
+      urls.push(
+        "https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick",
+        "https://nodejs.org/api/process.html",
+        "https://nodejs.org/api/globals.html",
+        "https://nodejs.org/api/timers.html"
+      );
+    } else {
+      urls.push("https://nodejs.org/docs/latest/api/");
+    }
+  }
+
   if (terms.has("kubernetes") || terms.has("k8s")) {
     const ssaFocused =
       anchors.has("server-side") ||
@@ -732,6 +753,18 @@ async function discoverDirectOfficialRows(analysis, limit) {
     } else if (/mongodb\.com\/docs\/llms\.txt/i.test(url)) {
       title = "MongoDB Developer Documentation Index";
       snippet = "Official MongoDB technical documentation index for database, Search, Vector Search, drivers, and self-managed deployment documentation.";
+    } else if (/nodejs\.org\/en\/learn\/asynchronous-work\/event-loop-timers-and-nexttick/i.test(url)) {
+      title = "Node.js Event Loop, Timers, and process.nextTick";
+      snippet = "Official Node.js documentation for the event loop, process.nextTick, timers, setImmediate, setTimeout, I/O ordering, and starvation behavior.";
+    } else if (/nodejs\.org\/api\/process\.html/i.test(url)) {
+      title = "Node.js Process API";
+      snippet = "Official Node.js Process API documentation covering process.nextTick and how the next tick queue runs relative to the event loop.";
+    } else if (/nodejs\.org\/api\/globals\.html/i.test(url)) {
+      title = "Node.js Globals";
+      snippet = "Official Node.js globals documentation covering queueMicrotask, Promise microtasks, and runtime globals.";
+    } else if (/nodejs\.org\/api\/timers\.html/i.test(url)) {
+      title = "Node.js Timers";
+      snippet = "Official Node.js timers documentation covering setImmediate and setTimeout behavior, including scheduling around I/O callbacks.";
     } else if (/kubernetes\.io\/docs\/reference\/using-api\/server-side-apply/i.test(url)) {
       title = "Kubernetes Server-Side Apply";
       snippet = "Official Kubernetes documentation for Server-Side Apply, managedFields ownership, field conflicts, and forcing conflicts to take ownership.";
