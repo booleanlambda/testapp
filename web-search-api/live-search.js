@@ -98,10 +98,18 @@ export async function liveSearch(query, options = {}) {
   const excludedDomains = Array.isArray(options.agentRequest?.excludedDomains)
     ? options.agentRequest.excludedDomains
     : [];
+  const preferredDomains = Array.isArray(options.agentRequest?.preferredDomains)
+    ? options.agentRequest.preferredDomains
+    : [];
+  const primaryOnly =
+    options.agentRequest?.sourcePolicy === "primary" &&
+    preferredDomains.length > 0;
 
   const eligibleDiscoveryResults = discovery.results.filter((row) => {
     const host = hostname(row.url);
-    return !excludedDomains.some((domain) => domainMatches(host, domain));
+    if (excludedDomains.some((domain) => domainMatches(host, domain))) return false;
+    if (primaryOnly && !preferredDomains.some((domain) => domainMatches(host, domain))) return false;
+    return true;
   });
 
   const selected = eligibleDiscoveryResults.slice(0, maxCrawl);
