@@ -1443,7 +1443,7 @@ export async function discoverWeb(query, options = {}) {
   const limit = Math.max(1, Math.min(Number(options.limit || 8), 20));
   const cacheTtl = Math.max(30, Math.min(Number(options.cacheTtl || 600), 3600));
   const deterministicAnalysis = analyzeQuery(q);
-  const analysis = await enrichQueryAnalysis(q, deterministicAnalysis);
+  const analysis = options.analysis || await enrichQueryAnalysis(q, deterministicAnalysis);
   const maxMs = Math.max(5000, Math.min(Number(options.maxMs || 26000), 30000));
   const deadline = Date.now() + maxMs;
 
@@ -1453,6 +1453,8 @@ export async function discoverWeb(query, options = {}) {
     limit,
     intent: analysis.intent,
     variants: analysis.variants,
+    planner: analysis.planner?.provider || null,
+    officialDomains: analysis.officialDomains || [],
     provider: process.env.SEARCH_DISCOVERY_BASE_URL ? "searxng+bing+ddg" : "bing+ddg"
   }));
 
