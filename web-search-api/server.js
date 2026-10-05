@@ -7,6 +7,7 @@ import { searchIndex } from "./search.js";
 import { liveSearch } from "./live-search.js";
 import { discoverWeb } from "./discovery.js";
 import { AGENT_SEARCH_PROTOCOL, agentSearchSchema, parseAgentSearchRequest } from "./agent-request.js";
+import { openApiSpec } from "./api-spec.js";
 import {
   createJob,
   ensureIndexes,
@@ -24,6 +25,28 @@ import {
 } from "./queue.js";
 
 const port = Number(process.env.PORT || 10000);
+
+function configuredApiKeys() {
+  return String(process.env.SEARCH_API_KEYS || process.env.SEARCH_API_KEY || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function suppliedApiKey(req) {
+  const direct = String(req.headers["x-api-key"] || "").trim();
+  if (direct) return direct;
+  const authorization = String(req.headers.authorization || "").trim();
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || "";
+}
+
+function requestAuthorized(req) {
+  const keys = configuredApiKeys();
+  if (!keys.length) return true;
+  const supplied = suppliedApiKey(req);
+  return Boolean(supplied && keys.includes(supplied));
+}
 
 const envState = () => ({
   MONGODB_URI: Boolean(process.env.MONGODB_URI),
@@ -209,6 +232,12 @@ const server = http.createServer(async (req, res) => {
 
     const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     const path = requestUrl.pathname;
+    const publicPaths = new Set(["/", "/health", "/agent-search-schema", "/openapi.json"]);
+
+    if (!publicPaths.has(path) && !requestAuthorized(req)) {
+      sendJson(res, 401, { error: "unauthorized" });
+      return;
+    }
 
     if (req.method === "GET" && path === "/") {
       sendJson(res, 200, {
@@ -222,6 +251,7 @@ const server = http.createServer(async (req, res) => {
           search: "POST /search or GET /search?q=...",
           agentSearch: `POST /search with protocol=${AGENT_SEARCH_PROTOCOL}`,
           agentSchema: "GET /agent-search-schema",
+          openapi: "GET /openapi.json",
           discover: "GET /discover?q=..."
         },
         limits: {
@@ -235,6 +265,13 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && path === "/agent-search-schema") {
       sendJson(res, 200, agentSearchSchema());
+      return;
+    }
+
+    if (req.method === "GET" && path === "/openapi.json") {
+      sendJson(res, 200, openApiSpec({
+        serverUrl: `https://${req.headers.host || "web-search-api-m30a.onrender.com"}`
+      }));
       return;
     }
 
