@@ -1,9 +1,10 @@
 import * as cheerio from "cheerio";
 import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
+import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 40;
+const DISCOVERY_CACHE_VERSION = 41;
 let nextAllowedAt = 0;
 
 async function throttle(ms = 850) {
@@ -608,6 +609,12 @@ function officialEntityTerms(analysis) {
 }
 
 function officialTechnicalHosts(analysis) {
+  const plannedHosts = Array.isArray(analysis.officialDomains)
+    ? analysis.officialDomains.map((x) => String(x || "").toLowerCase()).filter(Boolean)
+    : [];
+
+  if (plannedHosts.length) return [...new Set(plannedHosts)];
+
   const hostMap = new Map([
     ["postgres", ["postgresql.org"]],
     ["postgresql", ["postgresql.org"]],
@@ -1402,7 +1409,8 @@ export async function discoverWeb(query, options = {}) {
 
   const limit = Math.max(1, Math.min(Number(options.limit || 8), 20));
   const cacheTtl = Math.max(30, Math.min(Number(options.cacheTtl || 600), 3600));
-  const analysis = analyzeQuery(q);
+  const deterministicAnalysis = analyzeQuery(q);
+  const analysis = await enrichQueryAnalysis(q, deterministicAnalysis);
   const maxMs = Math.max(5000, Math.min(Number(options.maxMs || 26000), 30000));
   const deadline = Date.now() + maxMs;
 
@@ -1511,6 +1519,8 @@ export async function discoverWeb(query, options = {}) {
     precisionAnchors: analysis.precisionAnchors,
     strictPrecision: analysis.strictPrecision,
     effectiveQueries: analysis.variants,
+    planner: analysis.planner || null,
+    officialDomains: analysis.officialDomains || [],
     results,
     provider: results[0]?.provider || null,
     attempts,
