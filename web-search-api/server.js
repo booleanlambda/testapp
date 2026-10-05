@@ -610,6 +610,92 @@ server.listen(port, "0.0.0.0", async () => {
     const startedAt = Date.now();
     const body = {
       protocol: AGENT_SEARCH_PROTOCOL,
+      query: "In Python asyncio, what happens when one task inside a TaskGroup fails, how are the remaining tasks cancelled, and how are multiple failures propagated with ExceptionGroup?",
+      intent: "technical",
+      goal: "explain",
+      entities: ["Python", "asyncio"],
+      concepts: ["TaskGroup", "task cancellation", "ExceptionGroup", "multiple task failures"],
+      source_policy: "primary",
+      preferred_domains: ["docs.python.org"],
+      required_evidence: ["TaskGroup", "cancel", "ExceptionGroup"],
+      depth: "deep",
+      max_results: 6,
+      crawl_budget: 4
+    };
+    const structured = parseAgentSearchRequest(body);
+    const query = structured.request.query;
+
+    try {
+      const result = await withTimeout(
+        liveSearch(query, {
+          limit: structured.request.limit,
+          maxDiscover: structured.request.maxDiscover,
+          maxCrawl: structured.request.maxCrawl,
+          freshSeconds: 60,
+          analysis: structured.analysis,
+          agentRequest: structured.request
+        }),
+        70000
+      );
+
+      const rankedRows = (result.results || []).filter((row) => row.fallback !== true);
+      const planner = result.discovery?.planner || {};
+      const checks = {
+        discovered: Number(result.discovery?.resultCount || 0) > 0,
+        structuredPlanner: planner.provider === "agent-structured",
+        noPlannerModel: planner.model == null,
+        technicalIntent: String(result.discovery?.intent || "").startsWith("technical"),
+        primaryPythonSource: rankedRows.some((row) => /(^|\.)docs\.python\.org$/i.test((() => { try { return new URL(row.url || "").hostname; } catch { return ""; } })())),
+        ranked: rankedRows.length > 0,
+        evidenceComplete: result.evidence?.complete === true,
+        taskGroup: result.evidence?.matched?.some((x) => /taskgroup/i.test(x)) === true,
+        cancel: result.evidence?.matched?.some((x) => /cancel/i.test(x)) === true,
+        exceptionGroup: result.evidence?.matched?.some((x) => /exceptiongroup/i.test(x)) === true
+      };
+
+      const passed = Object.values(checks).every(Boolean);
+      const payload = {
+        name: "python_taskgroup_structured_agent_full_pipeline",
+        query,
+        passed,
+        durationMs: Date.now() - startedAt,
+        protocol: result.protocol,
+        discovery: result.discovery,
+        crawl: result.crawl,
+        evidence: result.evidence,
+        embeddingModel: result.embeddingModel,
+        checks,
+        results: (result.results || []).slice(0, 8).map((row) => ({
+          title: row.title,
+          url: row.url,
+          score: row.score,
+          semanticScore: row.semanticScore,
+          lexicalScore: row.lexicalScore,
+          fallback: row.fallback || false,
+          excerpt: String(row.content || "").slice(0, 500)
+        }))
+      };
+
+      if (passed) {
+        console.log("RIGID_LIVE_PASS", JSON.stringify(payload));
+      } else {
+        console.error("RIGID_LIVE_FAIL", JSON.stringify(payload));
+      }
+    } catch (error) {
+      console.error("RIGID_LIVE_FAIL", JSON.stringify({
+        name: "python_taskgroup_structured_agent_full_pipeline",
+        query,
+        passed: false,
+        durationMs: Date.now() - startedAt,
+        error: error?.message || String(error)
+      }));
+    }
+  })();
+
+  (async () => {
+    const startedAt = Date.now();
+    const body = {
+      protocol: AGENT_SEARCH_PROTOCOL,
       query: "What does copy-on-write mean for Redis forked background saves, and why can Transparent Huge Pages make latency spikes worse?",
       intent: "technical",
       goal: "explain",
