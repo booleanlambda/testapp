@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 56;
+const DISCOVERY_CACHE_VERSION = 57;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -1185,6 +1185,82 @@ async function verifyOfficialSearchRows(rows, analysis, limit) {
   return [...ready, ...checked.filter(Boolean)].slice(0, Math.max(limit, 5));
 }
 
+function unwrapYahooUrl(rawUrl) {
+  const value = String(rawUrl || "");
+  const start = value.indexOf("/RU=");
+  if (start < 0) return value;
+
+  const from = start + 4;
+  const endings = ["/RK=", "/RS="]
+    .map((token) => value.indexOf(token, from))
+    .filter((index) => index >= 0);
+
+  const end = endings.length ? Math.min(...endings) : value.length;
+  try {
+    return decodeURIComponent(value.slice(from, end));
+  } catch {
+    return value.slice(from, end);
+  }
+}
+
+async function discoverYahooHtml(query, limit) {
+  await throttle("yahoo", 300);
+
+  const url = new URL("https://search.yahoo.com/search");
+  url.searchParams.set("p", query);
+  url.searchParams.set("n", String(Math.min(Math.max(limit, 10), 20)));
+
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": DISCOVERY_UA,
+      accept: "text/html,application/xhtml+xml",
+      "accept-language": "en-US,en;q=0.8"
+    },
+    signal: AbortSignal.timeout(3500)
+  });
+  if (!response.ok) throw new Error(`yahoo_${response.status}`);
+
+  const html = await response.text();
+  const $ = cheerio.load(html);
+  const rows = [];
+
+  const items = $('div.algo-sr, div.Sr, #web ol li').toArray();
+  for (const item of items) {
+    if (rows.length >= limit) break;
+
+    const root = $(item);
+    const anchor = root.find("h3 a").first();
+    if (!anchor.length) continue;
+
+    const rawUrl = anchor.attr("href");
+    const title =
+      String(anchor.attr("aria-label") || anchor.text() || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    const snippet =
+      root.find('div[class*="compText"], p').first().text()
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const normalized = normalizeRow(
+      {
+        title,
+        url: unwrapYahooUrl(rawUrl),
+        snippet,
+        publishedAt: null,
+        provider: "yahoo-html",
+        rank: rows.length + 1
+      },
+      "yahoo-html",
+      rows.length + 1
+    );
+
+    if (normalized) rows.push(normalized);
+  }
+
+  return rows;
+}
+
 async function discoverMojeekHtml(query, limit) {
   await throttle("mojeek", 300);
 
@@ -1670,7 +1746,9 @@ async function runVariant(query, analysis, limit) {
       boundedValue(discoverDuckDuckGo(query, Math.max(limit, 10)), 3600, [])
         .then((found) => ({ provider: found[0]?.provider || "duckduckgo", found })),
       boundedValue(discoverMojeekHtml(query, Math.max(limit, 10)), 3600, [])
-        .then((found) => ({ provider: "mojeek-html", found }))
+        .then((found) => ({ provider: "mojeek-html", found })),
+      boundedValue(discoverYahooHtml(query, Math.max(limit, 10)), 3600, [])
+        .then((found) => ({ provider: "yahoo-html", found }))
     ];
 
     if (process.env.SEARCH_DISCOVERY_BASE_URL) {
@@ -2023,6 +2101,11 @@ async function runVariant(query, analysis, limit) {
             provider: "mojeek-html",
             found
           })),
+        boundedValue(discoverYahooHtml(query, limit), 3800, [])
+          .then((found) => ({
+            provider: "yahoo-html",
+            found
+          })),
         !analysis.intent.startsWith("technical")
           ? boundedValue(discoverWikipedia(query, limit, analysis), 3800, [])
               .then((found) => ({
@@ -2077,7 +2160,7 @@ export async function discoverWeb(query, options = {}) {
     variants: analysis.variants,
     planner: analysis.planner?.provider || null,
     officialDomains: analysis.officialDomains || [],
-    provider: process.env.SEARCH_DISCOVERY_BASE_URL ? "searxng+bing+ddg+mojeek" : "bing+ddg+mojeek"
+    provider: process.env.SEARCH_DISCOVERY_BASE_URL ? "searxng+bing+ddg+mojeek+yahoo" : "bing+ddg+mojeek+yahoo"
   }));
 
   const cached = await boundedValue(getDiscoveryCache(cacheKey), 600, null);
