@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 57;
+const DISCOVERY_CACHE_VERSION = 58;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -1379,6 +1379,49 @@ async function discoverDuckDuckGo(query, limit) {
   );
 }
 
+async function discoverWikipediaFullText(query, limit) {
+  await throttle("wikipedia-fulltext", 150);
+
+  const url = new URL("https://en.wikipedia.org/w/api.php");
+  url.searchParams.set("action", "query");
+  url.searchParams.set("list", "search");
+  url.searchParams.set("srsearch", query);
+  url.searchParams.set("srnamespace", "0");
+  url.searchParams.set("srlimit", String(Math.min(Math.max(limit, 5), 10)));
+  url.searchParams.set("format", "json");
+  url.searchParams.set("formatversion", "2");
+  url.searchParams.set("origin", "*");
+
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": DISCOVERY_UA,
+      accept: "application/json"
+    },
+    signal: AbortSignal.timeout(3000)
+  });
+  if (!response.ok) throw new Error("wikipedia_fulltext_" + response.status);
+
+  const json = await response.json();
+  const rows = (json?.query?.search || []).map((item, index) => ({
+    title: item.title || null,
+    url: item.pageid
+      ? "https://en.wikipedia.org/?curid=" + item.pageid
+      : "https://en.wikipedia.org/wiki/" +
+        encodeURIComponent(String(item.title || "").replace(/ /g, "_")),
+    snippet: cheerio
+      .load("<div>" + String(item.snippet || "") + "</div>")("div")
+      .text()
+      .replace(/\s+/g, " ")
+      .trim(),
+    publishedAt: null,
+    provider: "wikipedia-fulltext",
+    rank: index + 1,
+    queryEvidence: []
+  }));
+
+  return normalizeRows(rows.slice(0, limit), "wikipedia-fulltext");
+}
+
 async function discoverWikipedia(query, limit, analysis = {}) {
   await throttle("wikipedia", 150);
 
@@ -1799,6 +1842,27 @@ async function runVariant(query, analysis, limit) {
       }
     }
 
+    if (
+      focused.length < Math.min(3, limit) &&
+      (analysis.descriptivePhrases || []).length
+    ) {
+      const fullTextRows = await boundedValue(
+        discoverWikipediaFullText(
+          analysis.semanticVariant || analysis.relationalVariant || query,
+          limit
+        ),
+        3200,
+        []
+      );
+
+      if (fullTextRows.length) rows.push(...fullTextRows);
+      attempts.push({
+        provider: "wikipedia-fulltext",
+        query: analysis.semanticVariant || analysis.relationalVariant || query,
+        ok: fuse(fullTextRows, analysis, limit).length > 0
+      });
+    }
+
     return { rows, attempts };
   }
 
@@ -2106,6 +2170,19 @@ async function runVariant(query, analysis, limit) {
             provider: "yahoo-html",
             found
           })),
+        (analysis.descriptivePhrases || []).length
+          ? boundedValue(
+              discoverWikipediaFullText(
+                analysis.semanticVariant || analysis.relationalVariant || query,
+                limit
+              ),
+              3200,
+              []
+            ).then((found) => ({
+              provider: "wikipedia-fulltext",
+              found
+            }))
+          : Promise.resolve({ provider: "wikipedia-fulltext", found: [] }),
         !analysis.intent.startsWith("technical")
           ? boundedValue(discoverWikipedia(query, limit, analysis), 3800, [])
               .then((found) => ({
