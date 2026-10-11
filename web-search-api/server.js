@@ -562,6 +562,44 @@ async function runMediaProbe() {
       }
     },
     {
+      name: "image_public_domain_live_probe",
+      run: () => searchImages("Apollo 17 Earth", {
+        limit: 5,
+        safeSearch: "moderate",
+        rights: "public_domain",
+        cacheTtl: 30
+      }),
+      validate(result) {
+        const rows = Array.isArray(result?.results) ? result.results : [];
+        const rightsRows = rows.map((row) => ({
+          title: row?.title || null,
+          source_url: row?.source_url || null,
+          provider: row?.provider || null,
+          license: row?.license ?? null,
+          copyright_status: row?.copyright_status ?? null,
+          attribution_required: row?.attribution_required ?? null,
+          rights_verified: row?.rights?.rights_verified === true
+        }));
+        return {
+          passed:
+            rows.length > 0 &&
+            rows.every((row) =>
+              /public[_ -]?domain|cc0|pdm/i.test(
+                `${row?.license || ""} ${row?.copyright_status || ""}`
+              )
+            ),
+          payload: {
+            provider: result?.provider || null,
+            providers: result?.providers || [],
+            resultCount: rows.length,
+            attempts: result?.attempts || [],
+            cached: result?.cached === true,
+            rightsShape: rightsRows
+          }
+        };
+      }
+    },
+    {
       name: "video_search_live_probe",
       run: () => searchVideos("Ghana football", {
         limit: 5,
