@@ -1,5 +1,32 @@
 # Crawler API
 
+
+## Human-facing search
+
+The service root is now the manual search website:
+
+```
+GET /
+```
+
+Browser requests use public, rate-limited routes that do not require or expose the agent API key:
+
+```
+GET /human/search?q=<query>
+GET /human/images?q=<query>&rights=any
+GET /human/videos?q=<query>
+```
+
+Human image search supports `rights=any|known|no_attribution|public_domain`.
+
+These routes are intended for the Crawler website. Agent integrations should continue using the authenticated API/SDK.
+
+The service metadata previously returned from `/` is now available at:
+
+```
+GET /api
+```
+
 ## Protocol
 
 Current structured protocol:
