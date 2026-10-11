@@ -6,6 +6,7 @@ import { crawlSite, validatePublicUrl } from "./crawler.js";
 import { searchIndex } from "./search.js";
 import { liveSearch } from "./live-search.js";
 import { discoverWeb } from "./discovery.js";
+import { searchImages } from "./image-search.js";
 import { AGENT_SEARCH_PROTOCOL, agentSearchSchema, parseAgentSearchRequest } from "./agent-request.js";
 import { openApiSpec } from "./api-spec.js";
 import {
@@ -242,7 +243,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && path === "/") {
       sendJson(res, 200, {
         service: "web-search-api",
-        version: "0.6.0",
+        version: "0.7.0",
         endpoints: {
           health: "GET /health",
           diagnostics: "GET /diagnostics",
@@ -252,12 +253,14 @@ const server = http.createServer(async (req, res) => {
           agentSearch: `POST /search with protocol=${AGENT_SEARCH_PROTOCOL}`,
           agentSchema: "GET /agent-search-schema",
           openapi: "GET /openapi.json",
-          discover: "GET /discover?q=..."
+          discover: "GET /discover?q=...",
+          images: "POST /images or GET /images?q=..."
         },
         limits: {
           crawlMaxPages: 10,
           crawlMaxDepth: 2,
-          searchMaxResults: 20
+          searchMaxResults: 20,
+          imageSearchMaxResults: 30
         }
       });
       return;
@@ -360,6 +363,56 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const result = await discoverWeb(query, { limit });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if ((req.method === "POST" || req.method === "GET") && path === "/images") {
+      const body = req.method === "POST" ? await readJson(req) : {};
+      const query = body.query || body.q || requestUrl.searchParams.get("q");
+      if (!query) {
+        sendJson(res, 400, { error: "query_required" });
+        return;
+      }
+
+      const result = await searchImages(query, {
+        limit:
+          body.max_results ||
+          body.limit ||
+          requestUrl.searchParams.get("limit") ||
+          requestUrl.searchParams.get("max_results") ||
+          12,
+        safe_search:
+          body.safe_search ||
+          body.safeSearch ||
+          requestUrl.searchParams.get("safe_search") ||
+          "moderate",
+        aspect: body.aspect || requestUrl.searchParams.get("aspect") || "any",
+        min_width:
+          body.min_width ||
+          body.minWidth ||
+          requestUrl.searchParams.get("min_width") ||
+          0,
+        min_height:
+          body.min_height ||
+          body.minHeight ||
+          requestUrl.searchParams.get("min_height") ||
+          0,
+        preferred_domains:
+          body.preferred_domains ||
+          body.preferredDomains ||
+          [],
+        excluded_domains:
+          body.excluded_domains ||
+          body.excludedDomains ||
+          [],
+        cache_ttl:
+          body.cache_ttl ||
+          body.cacheTtl ||
+          requestUrl.searchParams.get("cache_ttl") ||
+          1800
+      });
+
       sendJson(res, 200, result);
       return;
     }
@@ -496,7 +549,7 @@ async function runStructuredLatencyProbe() {
 }
 
 server.listen(port, "0.0.0.0", async () => {
-  console.log(`web-search-api v0.6.0 listening on ${port}`);
+  console.log(`web-search-api v0.7.0 listening on ${port}`);
 
   try {
     await ensureIndexes();
