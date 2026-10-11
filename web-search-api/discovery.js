@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 48;
+const DISCOVERY_CACHE_VERSION = 49;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -134,18 +134,30 @@ function normalizedTitleKey(title) {
     .trim();
 }
 
+function normalizedWordString(value) {
+  return " " + String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim() + " ";
+}
+
 function rowCoverage(row, analysis) {
-  const hay = `${row?.title || ""} ${row?.snippet || ""} ${row?.url || ""}`.toLowerCase();
+  const hay = normalizedWordString(
+    (row?.title || "") + " " + (row?.snippet || "") + " " + (row?.url || "")
+  );
   const anchors = Array.isArray(analysis?.anchors) ? analysis.anchors : [];
   let anchorHits = 0;
 
   for (const anchor of anchors) {
-    if (hay.includes(String(anchor).toLowerCase())) anchorHits += 1;
+    const token = normalizedWordString(anchor);
+    if (token.trim() && hay.includes(token)) anchorHits += 1;
   }
 
   let phraseHits = 0;
   for (const phrase of analysis?.queryPhrases || []) {
-    if (hay.includes(String(phrase).toLowerCase())) phraseHits += 1;
+    const normalizedPhrase = normalizedWordString(phrase);
+    if (normalizedPhrase.trim() && hay.includes(normalizedPhrase)) phraseHits += 1;
   }
 
   return { anchorHits, phraseHits };
