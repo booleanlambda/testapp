@@ -708,6 +708,7 @@ const server = http.createServer(async (req, res) => {
 
 async function runFolkloreRelevanceProbe() {
   const cases = [
+    "The restless guy of jersey",
     "Pine Barrens folklore recent mysteries New Jersey",
     "Jersey Devil legends"
   ];
