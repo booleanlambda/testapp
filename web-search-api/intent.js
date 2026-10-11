@@ -72,6 +72,24 @@ function entityPhraseCandidates(query, queryPhrases) {
   return uniq([...quoted, ...inferred]).slice(0, 6);
 }
 
+function descriptiveConjunctiveVariant(value) {
+  const tokens = words(value);
+  const connectorIndex = tokens.findIndex((token) => PHRASE_CONNECTORS.has(token));
+  if (connectorIndex <= 0 || connectorIndex >= tokens.length - 1) return null;
+
+  const left = tokens
+    .slice(0, connectorIndex)
+    .filter((token) => !PHRASE_DETERMINERS.has(token));
+
+  const right = tokens
+    .slice(connectorIndex + 1)
+    .filter((token) => !PHRASE_DETERMINERS.has(token));
+
+  if (!left.length || !right.length) return null;
+
+  return `"${left.join(" ")}" "${right.join(" ")}"`;
+}
+
 function colloquialSemanticVariant(query, descriptivePhrases) {
   if (!(descriptivePhrases || []).length) return null;
 
@@ -397,6 +415,8 @@ export function analyzeQuery(query) {
   const entityPhrases = entityPhraseCandidates(q, queryPhrases);
   const descriptivePhrases = queryPhrases.filter((phrase) => phraseHasConnector(phrase));
   const semanticVariant = colloquialSemanticVariant(q, descriptivePhrases);
+  const descriptiveConjunctive =
+    descriptiveConjunctiveVariant(semanticVariant || descriptivePhrases[0] || "");
   const lower = q.toLowerCase();
   if (/web\s+crawler/.test(lower)) phrases.push("web crawler");
   if (/web\s+search\s+api/.test(lower)) phrases.push("web search api");
@@ -545,6 +565,7 @@ export function analyzeQuery(query) {
     descriptivePhrases,
     relationalVariant: relationalAnchorVariant(descriptivePhrases, anchors),
     semanticVariant,
+    descriptiveConjunctive,
     brand,
     comparisonTarget,
     comparisonMode,
