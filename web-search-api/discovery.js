@@ -1183,17 +1183,19 @@ async function discoverDuckDuckGo(query, limit) {
   );
 }
 
-async function discoverWikipedia(query, limit) {
+async function discoverWikipedia(query, limit, analysis = {}) {
   await throttle("wikipedia", 150);
 
+  const corePhrase = (analysis.queryPhrases || [])[0] || null;
+  const searchTerm = corePhrase || query;
+
   const url = new URL("https://en.wikipedia.org/w/api.php");
-  url.searchParams.set("action", "query");
-  url.searchParams.set("list", "search");
-  url.searchParams.set("srsearch", query);
+  url.searchParams.set("action", "opensearch");
+  url.searchParams.set("search", searchTerm);
+  url.searchParams.set("namespace", "0");
+  url.searchParams.set("limit", String(Math.min(Math.max(limit, 5), 10)));
   url.searchParams.set("format", "json");
-  url.searchParams.set("formatversion", "2");
   url.searchParams.set("origin", "*");
-  url.searchParams.set("srlimit", String(Math.min(Math.max(limit, 5), 10)));
 
   const response = await fetch(url, {
     headers: {
@@ -1202,15 +1204,20 @@ async function discoverWikipedia(query, limit) {
     },
     signal: AbortSignal.timeout(3500)
   });
-  if (!response.ok) throw new Error(`wikipedia_search_${response.status}`);
+  if (!response.ok) throw new Error("wikipedia_search_" + response.status);
 
   const json = await response.json();
-  const rows = (json?.query?.search || []).map((item, index) => ({
-    title: item.title || null,
-    url: item.pageid
-      ? `https://en.wikipedia.org/?curid=${item.pageid}`
-      : `https://en.wikipedia.org/wiki/${encodeURIComponent(String(item.title || "").replace(/ /g, "_"))}`,
-    snippet: cheerio.load(`<div>${item.snippet || ""}</div>`)("div").text().replace(/\s+/g, " ").trim(),
+  const titles = Array.isArray(json?.[1]) ? json[1] : [];
+  const descriptions = Array.isArray(json?.[2]) ? json[2] : [];
+  const urls = Array.isArray(json?.[3]) ? json[3] : [];
+
+  const rows = titles.map((title, index) => ({
+    title: title || null,
+    url:
+      urls[index] ||
+      "https://en.wikipedia.org/wiki/" +
+        encodeURIComponent(String(title || "").replace(/ /g, "_")),
+    snippet: descriptions[index] || null,
     publishedAt: null,
     provider: "wikipedia-search",
     rank: index + 1,
