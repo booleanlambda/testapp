@@ -326,6 +326,21 @@ function escapeRegex(value) {
     .join("");
 }
 
+function singularQueryForm(term) {
+  const value = String(term || "").toLowerCase();
+  if (value.length > 5 && value.endsWith("ies")) {
+    return value.slice(0, -3) + "y";
+  }
+  if (
+    value.length > 4 &&
+    value.endsWith("s") &&
+    !value.endsWith("ss")
+  ) {
+    return value.slice(0, -1);
+  }
+  return null;
+}
+
 function countOccurrences(haystack, needle) {
   if (!needle) return 0;
 
@@ -333,11 +348,19 @@ function countOccurrences(haystack, needle) {
   const term = String(needle || "").toLowerCase();
 
   if (/^[a-z0-9]+$/.test(term)) {
-    const re = new RegExp(
-      "(^|[^a-z0-9])" + escapeRegex(term) + "(?=$|[^a-z0-9])",
-      "g"
-    );
-    return [...hay.matchAll(re)].length;
+    const countExact = (candidate) => {
+      const re = new RegExp(
+        "(^|[^a-z0-9])" + escapeRegex(candidate) + "(?=$|[^a-z0-9])",
+        "g"
+      );
+      return [...hay.matchAll(re)].length;
+    };
+
+    const exactHits = countExact(term);
+    if (exactHits) return exactHits;
+
+    const singular = singularQueryForm(term);
+    return singular ? countExact(singular) : 0;
   }
 
   let n = 0;
