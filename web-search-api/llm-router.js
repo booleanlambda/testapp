@@ -221,6 +221,8 @@ async function requestPlan(config, model, query, timeoutMs = PLANNER_ATTEMPT_TIM
     "Preserve exact technical identifiers such as process.nextTick, queueMicrotask, flags, function names, model names, and configuration keys.",
     "For technical questions prefer primary/official documentation. If an official domain is confidently known, include it and make the first query a site: query against it.",
     "For comparisons, preserve the compared category and target. For news, preserve recency/date terms.",
+    "For colloquial or descriptive natural-language queries, preserve the user's meaning but generate retrieval-friendly lexical alternatives. Expand casual person words when useful (for example guy -> man/person), preserve relational meaning, and include plausible geographic expansions only as alternate queries rather than silently replacing the original.",
+    "Do not over-bind descriptive phrases as named entities. A phrase like 'the restless guy of Jersey' is descriptive, while 'Jersey Devil' is an entity.",
     "Do not invent a domain when unsure. Use at most 3 concise search queries."
   ].join(" ");
 
@@ -332,9 +334,13 @@ export async function enrichQueryAnalysis(query, fallback) {
     ) ||
     (
       fallback.intent === "general" &&
+      !(fallback.descriptivePhrases || []).length &&
       (
-        (fallback.queryPhrases || []).length > 0 ||
-        (fallback.anchors || []).length >= 2
+        (fallback.entityPhrases || []).length > 0 ||
+        (
+          (fallback.queryPhrases || []).length > 0 &&
+          (fallback.anchors || []).length >= 2
+        )
       )
     );
 
@@ -389,10 +395,20 @@ export async function enrichQueryAnalysis(query, fallback) {
       .filter((x) => /[ ._-]/.test(x) && x.length >= 4)
   ]).slice(0, 10);
 
-  const variants = uniq([
-    ...(fallback.variants || []),
-    ...plan.queries
-  ]).slice(0, 3);
+  const descriptiveGeneral =
+    fallback.intent === "general" &&
+    (fallback.descriptivePhrases || []).length > 0;
+
+  const variants = descriptiveGeneral
+    ? uniq([
+        fallback.variants?.[0] || query,
+        ...plan.queries,
+        ...(fallback.variants || []).slice(1)
+      ]).slice(0, 3)
+    : uniq([
+        ...(fallback.variants || []),
+        ...plan.queries
+      ]).slice(0, 3);
 
   const strictPrecision =
     plan.strictPrecision ||
