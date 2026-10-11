@@ -1,8 +1,9 @@
 import * as cheerio from "cheerio";
 import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
+import { buildRightsMetadata } from "./media-rights.js";
 
 const IMAGE_SEARCH_UA =
-  "Mozilla/5.0 (compatible; CrawlerImageSearch/0.7; +https://web-search-api-m30a.onrender.com)";
+  "Mozilla/5.0 (compatible; CrawlerImageSearch/0.8; +https://web-search-api-m30a.onrender.com)";
 const IMAGE_CACHE_VERSION = 1;
 const providerNextAllowedAt = new Map();
 
@@ -90,6 +91,16 @@ function normalizedImageRow(row, provider, rank) {
   const width = clampInt(row.width || row.imgWidth, 0, 0, 20000) || null;
   const height = clampInt(row.height || row.imgHeight, 0, 0, 20000) || null;
 
+  const rights = buildRightsMetadata({
+    license: row.license,
+    license_url: row.license_url || row.licenseUrl,
+    creator: row.creator || row.author,
+    creator_url: row.creator_url || row.creatorUrl,
+    copyright_notice: row.copyright_notice || row.copyright,
+    attribution_text: row.attribution_text,
+    attribution_required: row.attribution_required
+  });
+
   return {
     title: clean(row.title || row.name || row.t || row.desc, 500) || null,
     image_url: imageUrl,
@@ -99,8 +110,15 @@ function normalizedImageRow(row, provider, rank) {
     height,
     provider,
     rank,
-    license: clean(row.license, 120) || "unknown",
-    attribution_required: null
+    license: rights.license,
+    license_url: rights.license_url,
+    copyright_status: rights.copyright_status,
+    copyright_notice: rights.copyright_notice,
+    creator: rights.creator,
+    creator_url: rights.creator_url,
+    attribution_required: rights.attribution_required,
+    attribution_text: rights.attribution_text,
+    rights
   };
 }
 
@@ -139,7 +157,13 @@ async function discoverSearxImages(query, { limit, safeSearch }) {
           source_url: row.url || row.source_url,
           width: row.width,
           height: row.height,
-          license: row.license
+          license: row.license,
+          license_url: row.license_url || row.licenseUrl,
+          creator: row.author || row.creator,
+          creator_url: row.creator_url || row.author_url,
+          copyright_notice: row.copyright || row.copyright_notice,
+          attribution_text: row.attribution_text,
+          attribution_required: row.attribution_required
         },
         "searxng-images",
         index + 1
@@ -208,7 +232,14 @@ async function discoverBingImages(query, { limit, safeSearch }) {
         turl: metadata.turl,
         purl: metadata.purl,
         imgWidth: metadata.imgWidth || metadata.w,
-        imgHeight: metadata.imgHeight || metadata.h
+        imgHeight: metadata.imgHeight || metadata.h,
+        creator: metadata.creator || metadata.author,
+        creator_url: metadata.creatorUrl || metadata.authorUrl,
+        license: metadata.license,
+        license_url: metadata.licenseUrl,
+        copyright_notice: metadata.copyright || metadata.copyrightNotice,
+        attribution_text: metadata.attributionText,
+        attribution_required: metadata.attributionRequired
       },
       "bing-images-html",
       rows.length + 1
@@ -338,7 +369,7 @@ export async function searchImages(query, options = {}) {
       excluded_domains: normalized.excludedDomains
     },
     rights_notice:
-      "Image discovery does not grant reuse rights. license=unknown means the caller must verify rights on source_url before reuse."
+      "Image discovery returns upstream rights metadata when explicitly available, but does not grant reuse rights. rights_verified=false means the caller must verify license, attribution, and copyright on source_url before reuse or redistribution."
   };
 
   void setDiscoveryCache(cacheKey, value, normalized.cacheTtl).catch(() => {});
