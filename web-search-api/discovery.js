@@ -2160,7 +2160,16 @@ export async function discoverWeb(query, options = {}) {
         variant,
         durationMs: Date.now() - startedAt,
         rowCount: result.rows.length,
-        attempts: result.attempts
+        attempts: result.attempts,
+        candidates: q === "The restless guy of jersey"
+          ? result.rows.slice(0, 10).map((row) => ({
+              title: row.title,
+              url: row.url,
+              snippet: row.snippet,
+              provider: row.provider,
+              relevance: relevanceScore(row, analysis)
+            }))
+          : undefined
       }));
     }
 
