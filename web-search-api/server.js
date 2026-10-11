@@ -8,6 +8,7 @@ import { liveSearch } from "./live-search.js";
 import { discoverWeb } from "./discovery.js";
 import { searchImages } from "./image-search.js";
 import { searchVideos } from "./video-search.js";
+import { humanSearchPage } from "./human-ui.js";
 import { AGENT_SEARCH_PROTOCOL, agentSearchSchema, parseAgentSearchRequest } from "./agent-request.js";
 import { openApiSpec } from "./api-spec.js";
 import {
@@ -184,14 +185,85 @@ async function processCrawlJob(payload) {
   }
 }
 
-function sendJson(res, status, body) {
+function sendJson(res, status, body, extraHeaders = {}) {
   res.writeHead(status, {
-    "content-type": "application/json",
+    "content-type": "application/json; charset=utf-8",
     "access-control-allow-origin": "*",
     "access-control-allow-headers": "content-type,authorization,x-api-key",
-    "access-control-allow-methods": "GET,POST,OPTIONS"
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    ...extraHeaders
   });
   res.end(JSON.stringify(body));
+}
+
+function sendHtml(res, status, body) {
+  res.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "content-security-policy":
+      "default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+  });
+  res.end(body);
+}
+
+const HUMAN_RATE_WINDOW_MS = 60_000;
+const HUMAN_RATE_LIMIT = 30;
+const humanRateBuckets = new Map();
+
+function humanClientKey(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "")
+    .split(",")[0]
+    .trim();
+  return (
+    forwarded ||
+    String(req.headers["cf-connecting-ip"] || "").trim() ||
+    req.socket?.remoteAddress ||
+    "unknown"
+  );
+}
+
+function consumeHumanRate(req) {
+  const now = Date.now();
+  const key = humanClientKey(req);
+  const current = humanRateBuckets.get(key);
+
+  if (!current || now >= current.resetAt) {
+    humanRateBuckets.set(key, { count: 1, resetAt: now + HUMAN_RATE_WINDOW_MS });
+    return { ok: true, remaining: HUMAN_RATE_LIMIT - 1, retryAfter: 0 };
+  }
+
+  current.count += 1;
+  if (current.count > HUMAN_RATE_LIMIT) {
+    return {
+      ok: false,
+      remaining: 0,
+      retryAfter: Math.max(1, Math.ceil((current.resetAt - now) / 1000))
+    };
+  }
+
+  if (humanRateBuckets.size > 5000) {
+    for (const [bucketKey, bucket] of humanRateBuckets) {
+      if (now >= bucket.resetAt) humanRateBuckets.delete(bucketKey);
+    }
+  }
+
+  return {
+    ok: true,
+    remaining: Math.max(0, HUMAN_RATE_LIMIT - current.count),
+    retryAfter: 0
+  };
+}
+
+function clampHumanLimit(value, fallback, max) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(parsed, max));
+}
+
+function humanQuery(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, 500);
 }
 
 async function readJson(req, maxBytes = 65536) {
@@ -234,7 +306,16 @@ const server = http.createServer(async (req, res) => {
 
     const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     const path = requestUrl.pathname;
-    const publicPaths = new Set(["/", "/health", "/agent-search-schema", "/openapi.json"]);
+    const publicPaths = new Set([
+      "/",
+      "/api",
+      "/health",
+      "/agent-search-schema",
+      "/openapi.json",
+      "/human/search",
+      "/human/images",
+      "/human/videos"
+    ]);
 
     if (!publicPaths.has(path) && !requestAuthorized(req)) {
       sendJson(res, 401, { error: "unauthorized" });
@@ -242,10 +323,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && path === "/") {
+      sendHtml(res, 200, humanSearchPage());
+      return;
+    }
+
+    if (req.method === "GET" && path === "/api") {
       sendJson(res, 200, {
         service: "web-search-api",
-        version: "0.8.0",
-        endpoints: {
+        version: "0.9.0",
+        human: {
+          website: "GET /",
+          webSearch: "GET /human/search?q=...",
+          imageSearch: "GET /human/images?q=...",
+          videoSearch: "GET /human/videos?q=..."
+        },
+        agent: {
           health: "GET /health",
           diagnostics: "GET /diagnostics",
           crawl: "POST /crawl",
@@ -259,6 +351,7 @@ const server = http.createServer(async (req, res) => {
           videos: "POST /videos or GET /videos?q=..."
         },
         limits: {
+          humanRequestsPerMinutePerIp: HUMAN_RATE_LIMIT,
           crawlMaxPages: 10,
           crawlMaxDepth: 2,
           searchMaxResults: 20,
@@ -266,6 +359,74 @@ const server = http.createServer(async (req, res) => {
           videoSearchMaxResults: 30
         }
       });
+      return;
+    }
+
+    if (
+      req.method === "GET" &&
+      ["/human/search", "/human/images", "/human/videos"].includes(path)
+    ) {
+      const rate = consumeHumanRate(req);
+      if (!rate.ok) {
+        sendJson(
+          res,
+          429,
+          { error: "human_search_rate_limited", retry_after_seconds: rate.retryAfter },
+          {
+            "retry-after": String(rate.retryAfter),
+            "x-ratelimit-limit": String(HUMAN_RATE_LIMIT),
+            "x-ratelimit-remaining": "0"
+          }
+        );
+        return;
+      }
+
+      const query = humanQuery(requestUrl.searchParams.get("q"));
+      if (!query) {
+        sendJson(res, 400, { error: "query_required" });
+        return;
+      }
+
+      const rateHeaders = {
+        "cache-control": "no-store",
+        "x-ratelimit-limit": String(HUMAN_RATE_LIMIT),
+        "x-ratelimit-remaining": String(rate.remaining)
+      };
+
+      if (path === "/human/search") {
+        const limit = clampHumanLimit(requestUrl.searchParams.get("limit"), 10, 15);
+        const result = await discoverWeb(query, { limit });
+        sendJson(res, 200, {
+          query,
+          results: result.results || [],
+          provider: result.provider || null,
+          providers: result.providers || [],
+          cached: result.cached === true,
+          searchedAt: result.discoveredAt || new Date().toISOString()
+        }, rateHeaders);
+        return;
+      }
+
+      if (path === "/human/images") {
+        const limit = clampHumanLimit(requestUrl.searchParams.get("limit"), 18, 24);
+        const rights = requestUrl.searchParams.get("rights") || "any";
+        const result = await searchImages(query, {
+          limit,
+          safe_search: "moderate",
+          rights,
+          cache_ttl: 1800
+        });
+        sendJson(res, 200, result, rateHeaders);
+        return;
+      }
+
+      const limit = clampHumanLimit(requestUrl.searchParams.get("limit"), 12, 18);
+      const result = await searchVideos(query, {
+        limit,
+        safe_search: "moderate",
+        cache_ttl: 1800
+      });
+      sendJson(res, 200, result, rateHeaders);
       return;
     }
 
@@ -733,7 +894,7 @@ async function runStructuredLatencyProbe() {
 }
 
 server.listen(port, "0.0.0.0", async () => {
-  console.log(`web-search-api v0.8.0 listening on ${port}`);
+  console.log(`web-search-api v0.9.0 listening on ${port}`);
 
   try {
     await ensureIndexes();
