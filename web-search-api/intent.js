@@ -26,11 +26,15 @@ const FINANCE_SIGNAL = /\b(cedi|currency|fx|forex|economy|economic|inflation|mar
 const EVENT_SIGNAL = /\b(devday|conference|event|keynote|launch|launched|release|released|announcement|announcements|unveil|unveiled|introduce|introduced)\b/i;
 
 function words(q) {
-  return String(q).toLowerCase().match(/[a-z0-9][a-z0-9._-]*/g) || [];
+  return (String(q).toLowerCase().match(/[a-z0-9][a-z0-9._-]*/g) || [])
+    .map((token) => token.replace(/^[._-]+|[._-]+$/g, ""))
+    .filter(Boolean);
 }
 
 function rawWords(q) {
-  return String(q).match(/[A-Za-z0-9][A-Za-z0-9._-]*/g) || [];
+  return (String(q).match(/[A-Za-z0-9][A-Za-z0-9._-]*/g) || [])
+    .map((token) => token.replace(/^[._-]+|[._-]+$/g, ""))
+    .filter(Boolean);
 }
 
 function uniq(xs) {
@@ -158,6 +162,7 @@ function queryPhraseCandidates(query) {
     const b = tokens[i + 1];
     if (STOP.has(a) || STOP.has(b)) continue;
     if (a.length < 4 || b.length < 4) continue;
+    if (likelyClauseVerb(b, tokens[i + 2])) continue;
     add(`${a} ${b}`, 30);
   }
 
