@@ -422,6 +422,7 @@ const server = http.createServer(async (req, res) => {
           results: result.results || [],
           provider: result.provider || null,
           providers: result.providers || [],
+          suggestions: result.suggestions || [],
           cached: result.cached === true,
           searchedAt: result.discoveredAt || new Date().toISOString()
         }, rateHeaders);
