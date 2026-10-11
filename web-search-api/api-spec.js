@@ -3,7 +3,7 @@ export function openApiSpec({ serverUrl = "https://web-search-api-m30a.onrender.
     openapi: "3.1.0",
     info: {
       title: "Crawler Agent Search API",
-      version: "0.8.0",
+      version: "0.9.0",
       description: "Agent-first web retrieval. The calling agent supplies intent and evidence requirements; Crawler performs deterministic discovery, fetching, ranking, and evidence validation."
     },
     servers: [{ url: serverUrl.replace(/\/$/, "") }],
