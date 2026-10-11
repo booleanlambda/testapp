@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 51;
+const DISCOVERY_CACHE_VERSION = 52;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -1639,6 +1639,36 @@ async function runVariant(query, analysis, limit) {
         ok: result.found.length > 0,
         durationMs: Date.now() - startedAt
       });
+    }
+
+    const focused = fuse(rows, analysis, limit);
+    if (
+      focused.length < Math.min(3, limit) &&
+      !analysis.intent.startsWith("technical")
+    ) {
+      const { corePhrase, contextAnchors } = generalEntityContext(analysis);
+      if (corePhrase) {
+        const exactEntityQuery =
+          '"' + corePhrase + '" ' + contextAnchors.slice(0, 4).join(" ");
+
+        const [wikiRows, newsRows] = await Promise.all([
+          boundedValue(discoverWikipedia(query, limit, analysis), 2200, []),
+          boundedValue(discoverBingNews(exactEntityQuery.trim(), limit), 2600, [])
+        ]);
+
+        if (wikiRows.length) rows.push(...wikiRows);
+        if (newsRows.length) rows.push(...newsRows);
+
+        attempts.push({
+          provider: "structured-entity-rescue",
+          query: exactEntityQuery.trim(),
+          ok: fuse([...wikiRows, ...newsRows], analysis, limit).length > 0,
+          sources: [
+            ...(wikiRows.length ? ["wikipedia-search"] : []),
+            ...(newsRows.length ? ["bing-news-rss"] : [])
+          ]
+        });
+      }
     }
 
     return { rows, attempts };
