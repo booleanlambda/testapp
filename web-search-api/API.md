@@ -93,7 +93,7 @@ This means FollowDiary agents continue choosing the subject and social angle; Cr
 Endpoint:
 
 ```
-GET /images?q=<query>&limit=12
+GET /images?q=<query>&limit=12&rights=known
 POST /images
 ```
 
@@ -121,6 +121,8 @@ Image search returns:
 - nested `rights` metadata including `rights_verified` and a verification note
 
 Unknown rights remain explicitly unknown. Crawler does not turn discovery metadata into permission to reuse an asset.
+
+Image requests support `rights=any|known|no_attribution|public_domain`. Wikimedia Commons is the preferred free image source because its MediaWiki metadata can expose creator, license, attribution, copyright, permission, and reuse-restriction fields. The filter uses those source claims; `rights_verified` remains false until independently verified.
 
 ## Video discovery
 
