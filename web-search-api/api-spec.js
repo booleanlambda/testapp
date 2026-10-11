@@ -43,6 +43,7 @@ export function openApiSpec({ serverUrl = "https://web-search-api-m30a.onrender.
             max_results: { type: "integer", minimum: 1, maximum: 30, default: 12 },
             safe_search: { enum: ["strict","moderate","off"], default: "moderate" },
             aspect: { enum: ["any","square","wide","tall"], default: "any" },
+            rights: { enum: ["any","known","no_attribution","public_domain"], default: "any" },
             min_width: { type: "integer", minimum: 0, maximum: 10000, default: 0 },
             min_height: { type: "integer", minimum: 0, maximum: 10000, default: 0 },
             preferred_domains: { type: "array", items: { type: "string" }, maxItems: 12 },
@@ -109,6 +110,7 @@ export function openApiSpec({ serverUrl = "https://web-search-api-m30a.onrender.
             { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 30 } },
             { name: "safe_search", in: "query", schema: { enum: ["strict","moderate","off"] } },
             { name: "aspect", in: "query", schema: { enum: ["any","square","wide","tall"] } },
+            { name: "rights", in: "query", schema: { enum: ["any","known","no_attribution","public_domain"] } },
             { name: "min_width", in: "query", schema: { type: "integer", minimum: 0 } },
             { name: "min_height", in: "query", schema: { type: "integer", minimum: 0 } }
           ],
