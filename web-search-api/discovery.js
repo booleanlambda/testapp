@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 58;
+const DISCOVERY_CACHE_VERSION = 59;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -376,6 +376,39 @@ async function discoverBingNews(query, limit) {
   });
 
   return normalizeRows(rows.slice(0, Math.max(limit, 20)), "bing-news-rss");
+}
+
+async function discoverBingWebRss(query, limit) {
+  await throttle("bing", 250);
+
+  const url = new URL("https://www.bing.com/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("format", "rss");
+  url.searchParams.set("count", "20");
+
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": DISCOVERY_UA,
+      accept: "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.1"
+    },
+    signal: AbortSignal.timeout(3500)
+  });
+  if (!response.ok) throw new Error("bing_web_rss_" + response.status);
+
+  const xml = await response.text();
+  const $ = cheerio.load(xml, { xmlMode: true });
+  const rows = [];
+
+  $("item").each((_, item) => {
+    rows.push({
+      title: $(item).find("title").first().text().trim(),
+      url: $(item).find("link").first().text().trim(),
+      snippet: $(item).find("description").first().text().trim(),
+      publishedAt: $(item).find("pubDate").first().text().trim() || null
+    });
+  });
+
+  return normalizeRows(rows.slice(0, Math.max(limit, 20)), "bing-web-rss");
 }
 
 async function discoverBingHtml(query, limit) {
@@ -1784,6 +1817,8 @@ async function runVariant(query, analysis, limit) {
   if (structuredBroad) {
     const startedAt = Date.now();
     const jobs = [
+      boundedValue(discoverBingWebRss(query, Math.max(limit, 10)), 3400, [])
+        .then((found) => ({ provider: "bing-web-rss", found })),
       boundedValue(discoverBingHtml(query, Math.max(limit, 10)), 3600, [])
         .then((found) => ({ provider: "bing-html", found })),
       boundedValue(discoverDuckDuckGo(query, Math.max(limit, 10)), 3600, [])
@@ -2155,6 +2190,11 @@ async function runVariant(query, analysis, limit) {
 
     const winner = await firstUsefulValue(
       [
+        boundedValue(discoverBingWebRss(query, limit), 3400, [])
+          .then((found) => ({
+            provider: "bing-web-rss",
+            found
+          })),
         boundedValue(discoverDuckDuckGo(query, limit), 4200, [])
           .then((found) => ({
             provider: found[0]?.provider || "duckduckgo",
@@ -2237,7 +2277,7 @@ export async function discoverWeb(query, options = {}) {
     variants: analysis.variants,
     planner: analysis.planner?.provider || null,
     officialDomains: analysis.officialDomains || [],
-    provider: process.env.SEARCH_DISCOVERY_BASE_URL ? "searxng+bing+ddg+mojeek+yahoo" : "bing+ddg+mojeek+yahoo"
+    provider: process.env.SEARCH_DISCOVERY_BASE_URL ? "searxng+bing-rss+bing+ddg+mojeek+yahoo" : "bing-rss+bing+ddg+mojeek+yahoo"
   }));
 
   const cached = await boundedValue(getDiscoveryCache(cacheKey), 600, null);
