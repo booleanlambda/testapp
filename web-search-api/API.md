@@ -114,15 +114,34 @@ POST body example:
 
 Image search returns:
 
-- `image_url`
-- `thumbnail_url`
-- `source_url`
+- `image_url`, `thumbnail_url`, and `source_url`
 - `width` / `height` when discoverable
 - provider provenance and rank
-- `license` (currently `unknown` unless the upstream source supplies explicit metadata)
-- `attribution_required` (null when unknown)
+- normalized rights fields: `license`, `license_url`, `copyright_status`, `copyright_notice`, `creator`, `creator_url`, `attribution_required`, `attribution_text`
+- nested `rights` metadata including `rights_verified` and a verification note
 
-The free provider layer is intentionally replaceable. Paid/hardened image providers can be added later without changing the public endpoint contract.
+Unknown rights remain explicitly unknown. Crawler does not turn discovery metadata into permission to reuse an asset.
+
+## Video discovery
+
+Endpoint:
+
+```
+GET /videos?q=<query>&limit=12
+POST /videos
+```
+
+Video results include:
+
+- `video_url`, `source_url`, and `thumbnail_url`
+- creator/channel information when discoverable
+- `duration_seconds`, publication text, and view text when discoverable
+- provider provenance and rank
+- the same normalized rights fields and nested `rights` object as image search
+
+The free video layer uses SearxNG when configured and YouTube discovery as a fallback. Crawler does not download or rehost video assets.
+
+The free provider layer is intentionally replaceable. Paid/hardened image or video providers can be added later without changing the public endpoint contracts.
 
 ## Errors
 
