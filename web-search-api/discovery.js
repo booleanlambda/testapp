@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 50;
+const DISCOVERY_CACHE_VERSION = 51;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -142,6 +142,30 @@ function normalizedWordString(value) {
     .trim() + " ";
 }
 
+function normalizedQueryForms(value) {
+  const base = normalizedWordString(value).trim();
+  if (!base || base.includes(" ")) return [base].filter(Boolean);
+
+  const forms = [base];
+  if (base.length > 5 && base.endsWith("ies")) {
+    forms.push(base.slice(0, -3) + "y");
+  } else if (
+    base.length > 4 &&
+    base.endsWith("s") &&
+    !base.endsWith("ss")
+  ) {
+    forms.push(base.slice(0, -1));
+  }
+
+  return [...new Set(forms)];
+}
+
+function hayHasQueryForm(hay, value) {
+  return normalizedQueryForms(value).some((form) =>
+    form && hay.includes(" " + form + " ")
+  );
+}
+
 function rowCoverage(row, analysis) {
   const hay = normalizedWordString(
     (row?.title || "") + " " + (row?.snippet || "") + " " + (row?.url || "")
@@ -150,8 +174,7 @@ function rowCoverage(row, analysis) {
   let anchorHits = 0;
 
   for (const anchor of anchors) {
-    const token = normalizedWordString(anchor);
-    if (token.trim() && hay.includes(token)) anchorHits += 1;
+    if (hayHasQueryForm(hay, anchor)) anchorHits += 1;
   }
 
   let phraseHits = 0;
@@ -199,10 +222,9 @@ function passesGeneralCoverage(row, analysis) {
     const coreMatched = core.trim() && hay.includes(core);
     const canonicalTitle =
       normalizedTitleKey(row?.title) === normalizedTitleKey(corePhrase);
-    const contextMatched = contextAnchors.some((anchor) => {
-      const token = normalizedWordString(anchor);
-      return token.trim() && hay.includes(token);
-    });
+    const contextMatched = contextAnchors.some((anchor) =>
+      hayHasQueryForm(hay, anchor)
+    );
 
     if (canonicalTitle) return true;
     return Boolean(coreMatched && contextMatched);
