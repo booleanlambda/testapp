@@ -685,6 +685,116 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+async function runHumanSurfaceProbe() {
+  const base = `http://127.0.0.1:${port}`;
+  const startedAt = Date.now();
+
+  async function request(pathname, { json = false } = {}) {
+    const response = await fetch(`${base}${pathname}`, {
+      headers: { accept: json ? "application/json" : "*/*" },
+      signal: AbortSignal.timeout(15000)
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const text = await response.text();
+    let body = null;
+    if (json) {
+      try { body = text ? JSON.parse(text) : {}; } catch {}
+    }
+    return {
+      status: response.status,
+      contentType,
+      text,
+      body
+    };
+  }
+
+  try {
+    const [
+      homepage,
+      api,
+      web,
+      images,
+      videos,
+      protectedSearch
+    ] = await Promise.all([
+      request("/"),
+      request("/api", { json: true }),
+      request("/human/search?q=Python%20asyncio%20TaskGroup", { json: true }),
+      request("/human/images?q=Accra%20Ghana%20skyline&rights=known", { json: true }),
+      request("/human/videos?q=Ghana%20football", { json: true }),
+      request("/search?q=auth-boundary-check", { json: true })
+    ]);
+
+    const checks = {
+      homepageHtml:
+        homepage.status === 200 &&
+        /^text\/html/i.test(homepage.contentType) &&
+        /Crawler Search|Crawler/.test(homepage.text),
+      apiSummary:
+        api.status === 200 &&
+        api.body?.version === "0.9.0" &&
+        api.body?.human?.website === "GET /",
+      humanWeb:
+        web.status === 200 &&
+        Array.isArray(web.body?.results) &&
+        web.body.results.length > 0,
+      humanImages:
+        images.status === 200 &&
+        Array.isArray(images.body?.results) &&
+        images.body.results.length > 0 &&
+        images.body.results.some((row) => /accra|ghana/i.test(
+          `${row?.title || ""} ${row?.source_url || ""}`
+        )),
+      humanVideos:
+        videos.status === 200 &&
+        Array.isArray(videos.body?.results) &&
+        videos.body.results.length > 0,
+      agentAuthBoundary:
+        configuredApiKeys().length > 0
+          ? protectedSearch.status === 401
+          : protectedSearch.status >= 200 && protectedSearch.status < 500
+    };
+
+    const passed = Object.values(checks).every(Boolean);
+    const payload = {
+      name: "human_search_surface",
+      passed,
+      durationMs: Date.now() - startedAt,
+      checks,
+      statuses: {
+        homepage: homepage.status,
+        api: api.status,
+        web: web.status,
+        images: images.status,
+        videos: videos.status,
+        protectedSearch: protectedSearch.status
+      },
+      counts: {
+        web: web.body?.results?.length || 0,
+        images: images.body?.results?.length || 0,
+        videos: videos.body?.results?.length || 0
+      },
+      providers: {
+        web: web.body?.provider || null,
+        images: images.body?.provider || null,
+        videos: videos.body?.provider || null
+      }
+    };
+
+    console[passed ? "log" : "error"](
+      passed ? "HUMAN_SURFACE_PROBE_PASS" : "HUMAN_SURFACE_PROBE_FAIL",
+      JSON.stringify(payload)
+    );
+  } catch (error) {
+    console.error("HUMAN_SURFACE_PROBE_FAIL", JSON.stringify({
+      name: "human_search_surface",
+      passed: false,
+      durationMs: Date.now() - startedAt,
+      error: error?.message || String(error)
+    }));
+  }
+}
+
 async function runMediaProbe() {
   const tests = [
     {
@@ -915,6 +1025,7 @@ server.listen(port, "0.0.0.0", async () => {
 
   const runLatencyProbe = process.env.RUN_STARTUP_LATENCY_PROBE === "1";
   const runMediaProbeEnabled = process.env.RUN_STARTUP_MEDIA_PROBE === "1";
+  const runHumanSurfaceProbeEnabled = process.env.RUN_STARTUP_HUMAN_SURFACE_PROBE === "1";
   const runFullRegressions = process.env.RUN_STARTUP_REGRESSIONS === "1";
 
   if (runLatencyProbe) {
@@ -925,10 +1036,15 @@ server.listen(port, "0.0.0.0", async () => {
     void runMediaProbe();
   }
 
+  if (runHumanSurfaceProbeEnabled) {
+    void runHumanSurfaceProbe();
+  }
+
   if (!runFullRegressions) {
     console.log("startup regressions disabled", JSON.stringify({
       latencyProbe: runLatencyProbe,
       mediaProbe: runMediaProbeEnabled,
+      humanSurfaceProbe: runHumanSurfaceProbeEnabled,
       fullRegressions: false
     }));
     return;
