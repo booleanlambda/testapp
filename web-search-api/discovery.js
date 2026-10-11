@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 49;
+const DISCOVERY_CACHE_VERSION = 50;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -163,6 +163,24 @@ function rowCoverage(row, analysis) {
   return { anchorHits, phraseHits };
 }
 
+function generalEntityContext(analysis) {
+  const corePhrase = Array.isArray(analysis?.queryPhrases)
+    ? analysis.queryPhrases[0] || null
+    : null;
+  if (!corePhrase) return { corePhrase: null, contextAnchors: [] };
+
+  const coreTokens = new Set(
+    normalizedWordString(corePhrase).trim().split(/\s+/).filter(Boolean)
+  );
+  const anchors = Array.isArray(analysis?.anchors) ? analysis.anchors : [];
+  const contextAnchors = anchors.filter((anchor) => {
+    const normalized = normalizedWordString(anchor).trim();
+    return normalized && !coreTokens.has(normalized);
+  });
+
+  return { corePhrase, contextAnchors };
+}
+
 function passesGeneralCoverage(row, analysis) {
   if (analysis?.strictPrecision) return true;
   if (analysis?.intent?.startsWith("technical")) return true;
@@ -171,6 +189,25 @@ function passesGeneralCoverage(row, analysis) {
   if (anchors.length < 2) return true;
 
   const { anchorHits, phraseHits } = rowCoverage(row, analysis);
+  const { corePhrase, contextAnchors } = generalEntityContext(analysis);
+
+  if (corePhrase && contextAnchors.length) {
+    const hay = normalizedWordString(
+      (row?.title || "") + " " + (row?.snippet || "") + " " + (row?.url || "")
+    );
+    const core = normalizedWordString(corePhrase);
+    const coreMatched = core.trim() && hay.includes(core);
+    const canonicalTitle =
+      normalizedTitleKey(row?.title) === normalizedTitleKey(corePhrase);
+    const contextMatched = contextAnchors.some((anchor) => {
+      const token = normalizedWordString(anchor);
+      return token.trim() && hay.includes(token);
+    });
+
+    if (canonicalTitle) return true;
+    return Boolean(coreMatched && contextMatched);
+  }
+
   return anchorHits >= 2 || phraseHits > 0;
 }
 
@@ -227,6 +264,19 @@ function fuse(rows, analysis, limit) {
   if (analysis.intent === "news") {
     const focused = ranked.filter((row) => row.relevance >= 0);
     if (focused.length) ranked = focused;
+  }
+
+  if (
+    !analysis.strictPrecision &&
+    (analysis.anchors || []).length >= 3 &&
+    ranked.length > 1
+  ) {
+    const topScore = Number(ranked[0]?.relevance || 0);
+    if (topScore > 0) {
+      const relativeFloor = Math.max(topScore * 0.5, topScore - 20);
+      const clustered = ranked.filter((row) => row.relevance >= relativeFloor);
+      if (clustered.length) ranked = clustered;
+    }
   }
 
   ranked = ranked
@@ -1826,26 +1876,54 @@ async function runVariant(query, analysis, limit) {
     ) &&
     !(analysis.strictPrecision && analysis.brand)
   ) {
-    const rescueJobs = [
-      boundedValue(discoverDuckDuckGo(query, limit), 4200, [])
-        .then((found) => ({
-          provider: found[0]?.provider || "duckduckgo",
-          found
-        }))
-    ];
+    const { corePhrase, contextAnchors } = generalEntityContext(analysis);
 
-    if (!analysis.intent.startsWith("technical")) {
-      rescueJobs.push(
-        boundedValue(discoverWikipedia(query, limit, analysis), 3800, [])
-          .then((found) => ({
-            provider: "wikipedia-search",
-            found
-          }))
-      );
+    if (!analysis.intent.startsWith("technical") && corePhrase) {
+      const exactEntityQuery =
+        '"' + corePhrase + '" ' + contextAnchors.slice(0, 4).join(" ");
+
+      const [wikiRows, newsRows] = await Promise.all([
+        boundedValue(discoverWikipedia(query, limit, analysis), 2200, []),
+        boundedValue(discoverBingNews(exactEntityQuery.trim(), limit), 2600, [])
+      ]);
+
+      const entityRows = [...wikiRows, ...newsRows];
+      if (fuse(entityRows, analysis, limit).length > 0) {
+        rows.push(...entityRows);
+        attempts.push({
+          provider: "entity-rescue",
+          query: exactEntityQuery.trim(),
+          ok: true,
+          sources: [
+            ...(wikiRows.length ? ["wikipedia-search"] : []),
+            ...(newsRows.length ? ["bing-news-rss"] : [])
+          ]
+        });
+        return { rows, attempts };
+      }
+
+      attempts.push({
+        provider: "entity-rescue",
+        query: exactEntityQuery.trim(),
+        ok: false
+      });
     }
 
     const winner = await firstUsefulValue(
-      rescueJobs,
+      [
+        boundedValue(discoverDuckDuckGo(query, limit), 4200, [])
+          .then((found) => ({
+            provider: found[0]?.provider || "duckduckgo",
+            found
+          })),
+        !analysis.intent.startsWith("technical")
+          ? boundedValue(discoverWikipedia(query, limit, analysis), 3800, [])
+              .then((found) => ({
+                provider: "wikipedia-search",
+                found
+              }))
+          : Promise.resolve({ provider: "wikipedia-search", found: [] })
+      ],
       (candidate) =>
         Array.isArray(candidate?.found) &&
         fuse(candidate.found, analysis, limit).length > 0,
