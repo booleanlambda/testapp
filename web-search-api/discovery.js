@@ -2445,16 +2445,7 @@ export async function discoverWeb(query, options = {}) {
         variant,
         durationMs: Date.now() - startedAt,
         rowCount: result.rows.length,
-        attempts: result.attempts,
-        candidates: q === "The restless guy of jersey"
-          ? result.rows.slice(0, 10).map((row) => ({
-              title: row.title,
-              url: row.url,
-              snippet: row.snippet,
-              provider: row.provider,
-              relevance: relevanceScore(row, analysis)
-            }))
-          : undefined
+        attempts: result.attempts
       }));
     }
 
@@ -2516,6 +2507,15 @@ export async function discoverWeb(query, options = {}) {
     precisionAnchors: analysis.precisionAnchors,
     strictPrecision: analysis.strictPrecision,
     effectiveQueries: analysis.variants,
+    suggestions: [...new Set([
+      analysis.semanticVariant,
+      (analysis.anchors || []).join(" "),
+      analysis.relationalVariant
+    ].filter((value) =>
+      value &&
+      String(value).trim() &&
+      String(value).trim().toLowerCase() !== q.toLowerCase()
+    ))].slice(0, 3),
     planner: analysis.planner || null,
     officialDomains: analysis.officialDomains || [],
     results,
