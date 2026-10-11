@@ -3,8 +3,8 @@ import { sha256, getDiscoveryCache, setDiscoveryCache } from "./storage.js";
 import { buildRightsMetadata } from "./media-rights.js";
 
 const IMAGE_SEARCH_UA =
-  "Mozilla/5.0 (compatible; CrawlerImageSearch/0.8; +https://web-search-api-m30a.onrender.com)";
-const IMAGE_CACHE_VERSION = 2;
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+const IMAGE_CACHE_VERSION = 3;
 const providerNextAllowedAt = new Map();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -236,20 +236,28 @@ function parseBingMetadata(raw) {
 async function discoverBingImages(query, { limit, safeSearch }) {
   await throttle("bing-images", 500);
 
-  const url = new URL("https://www.bing.com/images/search");
+  const url = new URL("https://www.bing.com/images/async");
   url.searchParams.set("q", query);
   url.searchParams.set("count", String(Math.min(Math.max(limit * 4, 24), 100)));
-  url.searchParams.set("first", "1");
+  url.searchParams.set("first", "0");
+  url.searchParams.set("scenario", "ImageBasicHover");
+  url.searchParams.set("datsrc", "N_I");
+  url.searchParams.set("layout", "RowBased_Landscape");
+  url.searchParams.set("mmasync", "1");
   url.searchParams.set(
     "adlt",
     safeSearch === "strict" ? "strict" : safeSearch === "off" ? "off" : "moderate"
   );
 
+  const referer = new URL("https://www.bing.com/images/search");
+  referer.searchParams.set("q", query);
+
   const response = await fetch(url, {
     headers: {
       "user-agent": IMAGE_SEARCH_UA,
       accept: "text/html,application/xhtml+xml",
-      "accept-language": "en-US,en;q=0.8"
+      "accept-language": "en-US,en;q=0.8",
+      referer: referer.toString()
     },
     signal: AbortSignal.timeout(8000)
   });
@@ -292,6 +300,82 @@ async function discoverBingImages(query, { limit, safeSearch }) {
   });
 
   return rows.slice(0, Math.max(limit * 3, 24));
+}
+
+
+function extractDuckDuckGoVqd(html) {
+  const patterns = [
+    /vqd=['"]([^'"]+)['"]/i,
+    /"vqd"\s*:\s*"([^"]+)"/i,
+    /vqd=([\d-]+)/i
+  ];
+  for (const pattern of patterns) {
+    const match = String(html || "").match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+async function discoverDuckDuckGoImages(query, { limit, safeSearch }) {
+  await throttle("duckduckgo-images", 500);
+
+  const landing = new URL("https://duckduckgo.com/");
+  landing.searchParams.set("q", query);
+  landing.searchParams.set("iax", "images");
+  landing.searchParams.set("ia", "images");
+
+  const landingResponse = await fetch(landing, {
+    headers: {
+      "user-agent": IMAGE_SEARCH_UA,
+      accept: "text/html,application/xhtml+xml",
+      "accept-language": "en-US,en;q=0.8"
+    },
+    signal: AbortSignal.timeout(8000)
+  });
+  if (!landingResponse.ok) throw new Error(`duckduckgo_images_landing_${landingResponse.status}`);
+
+  const html = await landingResponse.text();
+  const vqd = extractDuckDuckGoVqd(html);
+  if (!vqd) throw new Error("duckduckgo_images_vqd_missing");
+
+  const url = new URL("https://duckduckgo.com/i.js");
+  url.searchParams.set("l", "us-en");
+  url.searchParams.set("o", "json");
+  url.searchParams.set("q", query);
+  url.searchParams.set("vqd", vqd);
+  url.searchParams.set("f", ",,,");
+  url.searchParams.set("p", safeSearch === "off" ? "-1" : safeSearch === "strict" ? "1" : "1");
+
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": IMAGE_SEARCH_UA,
+      accept: "application/json",
+      referer: landing.toString(),
+      "x-requested-with": "XMLHttpRequest"
+    },
+    signal: AbortSignal.timeout(8000)
+  });
+  if (!response.ok) throw new Error(`duckduckgo_images_${response.status}`);
+
+  const json = await response.json();
+  return (json?.results || [])
+    .slice(0, Math.max(limit * 3, 24))
+    .map((row, index) =>
+      normalizedImageRow(
+        {
+          title: row.title,
+          image_url: row.image,
+          thumbnail_url: row.thumbnail,
+          source_url: row.url,
+          width: row.width,
+          height: row.height,
+          creator: row.source
+        },
+        "duckduckgo-images",
+        index + 1
+      )
+    )
+    .filter(Boolean);
 }
 
 function fuseImageRows(rows, options, query) {
@@ -357,8 +441,8 @@ export async function searchImages(query, options = {}) {
   };
 
   const providerSet = process.env.SEARCH_DISCOVERY_BASE_URL
-    ? "searxng-images+bing-images"
-    : "bing-images";
+    ? "searxng-images+duckduckgo-images+bing-images"
+    : "duckduckgo-images+bing-images";
 
   const cacheKey = sha256(JSON.stringify({
     cacheVersion: IMAGE_CACHE_VERSION,
@@ -385,6 +469,12 @@ export async function searchImages(query, options = {}) {
         .catch((error) => ({ provider: "searxng-images", rows: [], error: error?.message }))
     );
   }
+
+  jobs.push(
+    discoverDuckDuckGoImages(q, normalized)
+      .then((rows) => ({ provider: "duckduckgo-images", rows }))
+      .catch((error) => ({ provider: "duckduckgo-images", rows: [], error: error?.message }))
+  );
 
   jobs.push(
     discoverBingImages(q, normalized)
