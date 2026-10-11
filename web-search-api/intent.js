@@ -72,6 +72,41 @@ function entityPhraseCandidates(query, queryPhrases) {
   return uniq([...quoted, ...inferred]).slice(0, 6);
 }
 
+function relationalAnchorVariant(descriptivePhrases, anchors) {
+  const phrase = (descriptivePhrases || [])[0];
+  if (!phrase) return null;
+
+  const tokens = words(phrase);
+  const connectorIndex = tokens.findIndex((token) => PHRASE_CONNECTORS.has(token));
+  if (connectorIndex <= 0 || connectorIndex >= tokens.length - 1) return null;
+
+  let leftIndex = connectorIndex - 1;
+  while (leftIndex >= 0 && (STOP.has(tokens[leftIndex]) || PHRASE_DETERMINERS.has(tokens[leftIndex]))) {
+    leftIndex -= 1;
+  }
+
+  let rightIndex = connectorIndex + 1;
+  while (rightIndex < tokens.length && (STOP.has(tokens[rightIndex]) || PHRASE_DETERMINERS.has(tokens[rightIndex]))) {
+    rightIndex += 1;
+  }
+
+  if (leftIndex < 0 || rightIndex >= tokens.length) return null;
+
+  const left = tokens[leftIndex];
+  const right = tokens[rightIndex];
+  const consumed = new Set([left, right]);
+
+  const remainder = (anchors || [])
+    .filter((token) => !consumed.has(token))
+    .slice(0, 4);
+
+  return [
+    `"${left}"`,
+    `"${right}"`,
+    ...remainder
+  ].join(" ").trim();
+}
+
 function normalizePhraseText(value) {
   return words(value).join(" ").trim();
 }
@@ -326,6 +361,7 @@ export function analyzeQuery(query) {
   const phrases = [];
   const queryPhrases = queryPhraseCandidates(q);
   const entityPhrases = entityPhraseCandidates(q, queryPhrases);
+  const descriptivePhrases = queryPhrases.filter((phrase) => phraseHasConnector(phrase));
   const lower = q.toLowerCase();
   if (/web\s+crawler/.test(lower)) phrases.push("web crawler");
   if (/web\s+search\s+api/.test(lower)) phrases.push("web search api");
@@ -444,7 +480,12 @@ export function analyzeQuery(query) {
     const exact = quotedCoreVariant(q, entityPhrases, anchors);
     if (exact && exact.toLowerCase() !== q.toLowerCase()) {
       variants.push(exact);
-    } else if (queryPhrases.some((phrase) => phraseHasConnector(phrase)) && anchors.length >= 2) {
+    } else if (descriptivePhrases.length && anchors.length >= 2) {
+      const relational = relationalAnchorVariant(descriptivePhrases, anchors);
+      if (relational && relational.toLowerCase() !== q.toLowerCase()) {
+        variants.push(relational);
+      }
+
       const relaxed = anchors.slice(0, 6).join(" ");
       if (relaxed && relaxed.toLowerCase() !== q.toLowerCase()) variants.push(relaxed);
     }
@@ -462,7 +503,8 @@ export function analyzeQuery(query) {
     phrases: uniq(phrases),
     queryPhrases,
     entityPhrases,
-    descriptivePhrases: queryPhrases.filter((phrase) => phraseHasConnector(phrase)),
+    descriptivePhrases,
+    relationalVariant: relationalAnchorVariant(descriptivePhrases, anchors),
     brand,
     comparisonTarget,
     comparisonMode,
