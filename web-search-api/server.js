@@ -217,7 +217,7 @@ function sendHtml(res, status, body) {
 function sendJavaScript(res, status, body) {
   res.writeHead(status, {
     "content-type": "application/javascript; charset=utf-8",
-    "cache-control": "public, max-age=300",
+    "cache-control": "no-cache",
     "x-content-type-options": "nosniff"
   });
   res.end(body);
