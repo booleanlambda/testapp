@@ -33,8 +33,11 @@ const HUMAN_APP_JS = readFileSync(new URL("./human-app.js", import.meta.url), "u
 new Function(HUMAN_APP_JS);
 
 function configuredApiKeys() {
-  return String(process.env.SEARCH_API_KEYS || process.env.SEARCH_API_KEY || "")
-    .split(",")
+  return [
+    ...String(process.env.SEARCH_API_KEYS || "").split(","),
+    String(process.env.SEARCH_API_KEY || ""),
+    String(process.env.CRAWLER_TEST_API_KEY || "")
+  ]
     .map((value) => value.trim())
     .filter(Boolean);
 }
@@ -707,9 +710,11 @@ async function runHumanSurfaceProbe() {
   const base = `http://127.0.0.1:${port}`;
   const startedAt = Date.now();
 
-  async function request(pathname, { json = false } = {}) {
+  async function request(pathname, { json = false, apiKey = null } = {}) {
+    const headers = { accept: json ? "application/json" : "*/*" };
+    if (apiKey) headers["x-api-key"] = apiKey;
     const response = await fetch(`${base}${pathname}`, {
-      headers: { accept: json ? "application/json" : "*/*" },
+      headers,
       signal: AbortSignal.timeout(15000)
     });
     const contentType = response.headers.get("content-type") || "";
@@ -733,14 +738,21 @@ async function runHumanSurfaceProbe() {
       web,
       images,
       videos,
-      protectedSearch
+      protectedSearch,
+      testKeySearch
     ] = await Promise.all([
       request("/"),
       request("/api", { json: true }),
       request("/human/search?q=Python%20asyncio%20TaskGroup", { json: true }),
       request("/human/images?q=Accra%20Ghana%20skyline&rights=known", { json: true }),
       request("/human/videos?q=Ghana%20football", { json: true }),
-      request("/search?q=auth-boundary-check", { json: true })
+      request("/search?q=auth-boundary-check", { json: true }),
+      process.env.CRAWLER_TEST_API_KEY
+        ? request("/search?q=test-key-auth-check", {
+            json: true,
+            apiKey: process.env.CRAWLER_TEST_API_KEY
+          })
+        : Promise.resolve({ status: null, body: null })
     ]);
 
     const checks = {
@@ -770,7 +782,11 @@ async function runHumanSurfaceProbe() {
       agentAuthBoundary:
         configuredApiKeys().length > 0
           ? protectedSearch.status === 401
-          : protectedSearch.status >= 200 && protectedSearch.status < 500
+          : protectedSearch.status >= 200 && protectedSearch.status < 500,
+      testApiKey:
+        process.env.CRAWLER_TEST_API_KEY
+          ? testKeySearch.status >= 200 && testKeySearch.status < 500
+          : true
     };
 
     const passed = Object.values(checks).every(Boolean);
@@ -785,7 +801,8 @@ async function runHumanSurfaceProbe() {
         web: web.status,
         images: images.status,
         videos: videos.status,
-        protectedSearch: protectedSearch.status
+        protectedSearch: protectedSearch.status,
+        testKeySearch: testKeySearch.status
       },
       counts: {
         web: web.body?.results?.length || 0,
