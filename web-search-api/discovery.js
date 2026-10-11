@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 52;
+const DISCOVERY_CACHE_VERSION = 53;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -187,8 +187,8 @@ function rowCoverage(row, analysis) {
 }
 
 function generalEntityContext(analysis) {
-  const corePhrase = Array.isArray(analysis?.queryPhrases)
-    ? analysis.queryPhrases[0] || null
+  const corePhrase = Array.isArray(analysis?.entityPhrases)
+    ? analysis.entityPhrases[0] || null
     : null;
   if (!corePhrase) return { corePhrase: null, contextAnchors: [] };
 
