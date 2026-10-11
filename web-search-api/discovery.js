@@ -1836,7 +1836,7 @@ async function runVariant(query, analysis, limit) {
 
     if (!analysis.intent.startsWith("technical")) {
       rescueJobs.push(
-        boundedValue(discoverWikipedia(query, limit), 3800, [])
+        boundedValue(discoverWikipedia(query, limit, analysis), 3800, [])
           .then((found) => ({
             provider: "wikipedia-search",
             found
@@ -1844,13 +1844,28 @@ async function runVariant(query, analysis, limit) {
       );
     }
 
-    const settled = await Promise.all(rescueJobs);
-    for (const rescue of settled) {
-      if (rescue.found.length) rows.push(...rescue.found);
+    const winner = await firstUsefulValue(
+      rescueJobs,
+      (candidate) =>
+        Array.isArray(candidate?.found) &&
+        fuse(candidate.found, analysis, limit).length > 0,
+      4300,
+      null
+    );
+
+    if (winner) {
+      rows.push(...winner.found);
       attempts.push({
-        provider: rescue.provider,
+        provider: winner.provider,
         query,
-        ok: rescue.found.length > 0
+        ok: true
+      });
+    } else {
+      attempts.push({
+        provider: "fallback-race",
+        query,
+        ok: false,
+        error: "no_relevant_fallback"
       });
     }
   }
