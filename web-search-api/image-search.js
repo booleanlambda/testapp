@@ -4,7 +4,7 @@ import { buildRightsMetadata } from "./media-rights.js";
 
 const IMAGE_SEARCH_UA =
   "Mozilla/5.0 (compatible; CrawlerImageSearch/0.8; +https://web-search-api-m30a.onrender.com)";
-const IMAGE_CACHE_VERSION = 1;
+const IMAGE_CACHE_VERSION = 2;
 const providerNextAllowedAt = new Map();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -60,6 +60,49 @@ function normalizeAspect(value) {
   const normalized = String(value || "any").trim().toLowerCase();
   if (["any", "square", "wide", "tall"].includes(normalized)) return normalized;
   return "any";
+}
+
+const IMAGE_QUERY_STOP_WORDS = new Set([
+  "a","an","and","at","by","for","from","in","of","on","or","the","to","with",
+  "image","images","photo","photos","picture","pictures"
+]);
+
+function imageQueryTokens(query) {
+  return clean(query, 1000)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2 && !IMAGE_QUERY_STOP_WORDS.has(token));
+}
+
+function imageRelevance(row, query) {
+  const tokens = imageQueryTokens(query);
+  if (!tokens.length) return { matched: true, score: 1, matches: 0 };
+
+  const hay = [
+    row?.title,
+    row?.source_url,
+    row?.creator
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  let matches = 0;
+  for (const token of tokens) {
+    if (hay.includes(token)) matches += 1;
+  }
+
+  const required = tokens.length >= 3 ? 2 : 1;
+  const phrase = clean(query, 1000).toLowerCase();
+  const phraseBonus = phrase && hay.includes(phrase) ? 1 : 0;
+  const score = (matches / tokens.length) + phraseBonus;
+
+  return {
+    matched: matches >= required,
+    score,
+    matches
+  };
 }
 
 function aspectMatches(width, height, aspect) {
@@ -251,7 +294,7 @@ async function discoverBingImages(query, { limit, safeSearch }) {
   return rows.slice(0, Math.max(limit * 3, 24));
 }
 
-function fuseImageRows(rows, options) {
+function fuseImageRows(rows, options, query) {
   const preferredDomains = (options.preferredDomains || [])
     .map(normalizeDomain)
     .filter(Boolean);
@@ -273,11 +316,22 @@ function fuseImageRows(rows, options) {
     if ((row.height || 0) < options.minHeight) continue;
     if (!aspectMatches(row.width, row.height, options.aspect)) continue;
 
-    filtered.push(row);
-    if (filtered.length >= options.limit) break;
+    const relevance = imageRelevance(row, query);
+    if (!relevance.matched) continue;
+
+    filtered.push({
+      ...row,
+      relevance_score: Number(relevance.score.toFixed(4)),
+      relevance_matches: relevance.matches
+    });
   }
 
-  return filtered.map((row, index) => ({
+  filtered.sort((a, b) =>
+    (b.relevance_score || 0) - (a.relevance_score || 0) ||
+    (a.rank || 0) - (b.rank || 0)
+  );
+
+  return filtered.slice(0, options.limit).map((row, index) => ({
     ...row,
     rank: index + 1
   }));
@@ -351,7 +405,7 @@ export async function searchImages(query, options = {}) {
     allRows.push(...item.rows);
   }
 
-  const results = fuseImageRows(allRows, normalized);
+  const results = fuseImageRows(allRows, normalized, q);
   const value = {
     query: q,
     results,
