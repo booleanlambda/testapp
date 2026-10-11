@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 54;
+const DISCOVERY_CACHE_VERSION = 55;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -1185,6 +1185,54 @@ async function verifyOfficialSearchRows(rows, analysis, limit) {
   return [...ready, ...checked.filter(Boolean)].slice(0, Math.max(limit, 5));
 }
 
+async function discoverMojeekHtml(query, limit) {
+  await throttle("mojeek", 300);
+
+  const url = new URL("https://www.mojeek.com/search");
+  url.searchParams.set("q", query);
+
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": DISCOVERY_UA,
+      accept: "text/html,application/xhtml+xml",
+      "accept-language": "en-US,en;q=0.8"
+    },
+    signal: AbortSignal.timeout(3500)
+  });
+  if (!response.ok) throw new Error(`mojeek_${response.status}`);
+
+  const html = await response.text();
+  const $ = cheerio.load(html);
+  const rows = [];
+
+  $("ul.results-standard > li").each((_, item) => {
+    if (rows.length >= limit) return false;
+
+    const root = $(item);
+    const anchor = root.find("h2 a").first();
+    const rawUrl = anchor.attr("href") || root.find("a.ob").first().attr("href");
+    const title = anchor.text().replace(/\s+/g, " ").trim();
+    const snippet = root.find("p.s").first().text().replace(/\s+/g, " ").trim();
+
+    const normalized = normalizeRow(
+      {
+        title,
+        url: rawUrl,
+        snippet,
+        publishedAt: null,
+        provider: "mojeek-html",
+        rank: rows.length + 1
+      },
+      "mojeek-html",
+      rows.length + 1
+    );
+
+    if (normalized) rows.push(normalized);
+  });
+
+  return rows;
+}
+
 async function discoverDuckDuckGoHtml(query, limit) {
   await throttle("duckduckgo", 350);
   const url = new URL("https://html.duckduckgo.com/html/");
@@ -1620,7 +1668,9 @@ async function runVariant(query, analysis, limit) {
       boundedValue(discoverBingHtml(query, Math.max(limit, 10)), 3600, [])
         .then((found) => ({ provider: "bing-html", found })),
       boundedValue(discoverDuckDuckGo(query, Math.max(limit, 10)), 3600, [])
-        .then((found) => ({ provider: found[0]?.provider || "duckduckgo", found }))
+        .then((found) => ({ provider: found[0]?.provider || "duckduckgo", found })),
+      boundedValue(discoverMojeekHtml(query, Math.max(limit, 10)), 3600, [])
+        .then((found) => ({ provider: "mojeek-html", found }))
     ];
 
     if (process.env.SEARCH_DISCOVERY_BASE_URL) {
@@ -1968,6 +2018,11 @@ async function runVariant(query, analysis, limit) {
             provider: found[0]?.provider || "duckduckgo",
             found
           })),
+        boundedValue(discoverMojeekHtml(query, limit), 3800, [])
+          .then((found) => ({
+            provider: "mojeek-html",
+            found
+          })),
         !analysis.intent.startsWith("technical")
           ? boundedValue(discoverWikipedia(query, limit, analysis), 3800, [])
               .then((found) => ({
@@ -2022,7 +2077,7 @@ export async function discoverWeb(query, options = {}) {
     variants: analysis.variants,
     planner: analysis.planner?.provider || null,
     officialDomains: analysis.officialDomains || [],
-    provider: process.env.SEARCH_DISCOVERY_BASE_URL ? "searxng+bing+ddg" : "bing+ddg"
+    provider: process.env.SEARCH_DISCOVERY_BASE_URL ? "searxng+bing+ddg+mojeek" : "bing+ddg+mojeek"
   }));
 
   const cached = await boundedValue(getDiscoveryCache(cacheKey), 600, null);
