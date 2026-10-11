@@ -1,5 +1,5 @@
 export const AGENT_SEARCH_PROTOCOL = "agent-search-v1";
-export const CRAWLER_API_VERSION = "0.8.0";
+export const CRAWLER_API_VERSION = "0.9.0";
 export const IMAGE_RIGHTS_POLICIES = Object.freeze(["any", "known", "no_attribution", "public_domain"]);
 
 export class CrawlerApiError extends Error {
