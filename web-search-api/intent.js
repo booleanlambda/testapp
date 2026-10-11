@@ -318,7 +318,8 @@ export function analyzeQuery(query) {
   };
 }
 
-function countOccurrences(haystack, needle) {
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^$()|[\]\\]/g, "\\function countOccurrences(haystack, needle) {
   if (!needle) return 0;
   let n = 0;
   let i = 0;
@@ -327,6 +328,47 @@ function countOccurrences(haystack, needle) {
     i += needle.length;
   }
   return n;
+}");
+}
+
+function countOccurrences(haystack, needle) {
+  if (!needle) return 0;
+
+  const hay = String(haystack || "").toLowerCase();
+  const term = String(needle || "").toLowerCase();
+
+  if (/^[a-z0-9]+$/.test(term)) {
+    const re = new RegExp(
+      "(^|[^a-z0-9])" + escapeRegex(term) + "(?=$|[^a-z0-9])",
+      "g"
+    );
+    return [...hay.matchAll(re)].length;
+  }
+
+  let n = 0;
+  let i = 0;
+  while ((i = hay.indexOf(term, i)) >= 0) {
+    n += 1;
+    i += term.length;
+  }
+  return n;
+}
+
+function phraseOccurs(haystack, phrase) {
+  const terms = String(phrase || "")
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (!terms.length) return false;
+
+  const body = terms.map(escapeRegex).join("\\s+");
+  const re = new RegExp(
+    "(^|[^a-z0-9])" + body + "(?=$|[^a-z0-9])",
+    "i"
+  );
+  return re.test(String(haystack || ""));
 }
 
 export function relevanceScore(row, analysis) {
@@ -364,7 +406,7 @@ export function relevanceScore(row, analysis) {
   }
 
   for (const phrase of analysis.queryPhrases || []) {
-    if (hay.includes(String(phrase).toLowerCase())) score += 7;
+    if (phraseOccurs(hay, phrase)) score += 7;
   }
 
   if (
