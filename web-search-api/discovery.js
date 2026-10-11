@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 46;
+const DISCOVERY_CACHE_VERSION = 47;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -126,6 +126,42 @@ function canonicalResultKey(rawUrl) {
   }
 }
 
+function normalizedTitleKey(title) {
+  return String(title || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function rowCoverage(row, analysis) {
+  const hay = `${row?.title || ""} ${row?.snippet || ""} ${row?.url || ""}`.toLowerCase();
+  const anchors = Array.isArray(analysis?.anchors) ? analysis.anchors : [];
+  let anchorHits = 0;
+
+  for (const anchor of anchors) {
+    if (hay.includes(String(anchor).toLowerCase())) anchorHits += 1;
+  }
+
+  let phraseHits = 0;
+  for (const phrase of analysis?.queryPhrases || []) {
+    if (hay.includes(String(phrase).toLowerCase())) phraseHits += 1;
+  }
+
+  return { anchorHits, phraseHits };
+}
+
+function passesGeneralCoverage(row, analysis) {
+  if (analysis?.strictPrecision) return true;
+  if (analysis?.intent?.startsWith("technical")) return true;
+
+  const anchors = Array.isArray(analysis?.anchors) ? analysis.anchors : [];
+  if (anchors.length < 2) return true;
+
+  const { anchorHits, phraseHits } = rowCoverage(row, analysis);
+  return anchorHits >= 2 || phraseHits > 0;
+}
+
 function fuse(rows, analysis, limit) {
   const byUrl = new Map();
 
@@ -142,7 +178,25 @@ function fuse(rows, analysis, limit) {
     }
   }
 
-  let ranked = [...byUrl.values()]
+  const byTitle = new Map();
+  for (const row of byUrl.values()) {
+    const titleKey = normalizedTitleKey(row.title);
+    if (titleKey.length < 18) {
+      byTitle.set(`url:${canonicalResultKey(row.url)}`, row);
+      continue;
+    }
+
+    const current = byTitle.get(titleKey);
+    if (
+      !current ||
+      row.relevance > current.relevance ||
+      (row.relevance === current.relevance && (row.rank || 99) < (current.rank || 99))
+    ) {
+      byTitle.set(titleKey, row);
+    }
+  }
+
+  let ranked = [...byTitle.values()]
     .sort((a, b) => {
       if (b.relevance !== a.relevance) return b.relevance - a.relevance;
       return (a.rank || 99) - (b.rank || 99);
@@ -150,6 +204,8 @@ function fuse(rows, analysis, limit) {
 
   if (analysis.strictPrecision) {
     ranked = ranked.filter((row) => passesPrecision(row, analysis));
+  } else {
+    ranked = ranked.filter((row) => passesGeneralCoverage(row, analysis));
   }
 
   if (analysis.intent.startsWith("technical")) {
@@ -1700,8 +1756,13 @@ async function runVariant(query, analysis, limit) {
     }
   }
 
+  const focusedBeforeFallback = fuse(rows, analysis, limit);
   if (
-    (!rows.length || analysis.intent.startsWith("technical")) &&
+    (
+      !rows.length ||
+      analysis.intent.startsWith("technical") ||
+      (!analysis.strictPrecision && focusedBeforeFallback.length === 0)
+    ) &&
     !(analysis.strictPrecision && analysis.brand)
   ) {
     try {
