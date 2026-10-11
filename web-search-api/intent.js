@@ -37,6 +37,34 @@ function uniq(xs) {
   return [...new Set(xs)];
 }
 
+function queryPhraseCandidates(query) {
+  const tokens = words(query);
+  const phrases = [];
+
+  for (let i = 0; i < tokens.length - 1; i += 1) {
+    const a = tokens[i];
+    const b = tokens[i + 1];
+    if (STOP.has(a) || STOP.has(b)) continue;
+    if (a.length < 4 || b.length < 4) continue;
+    phrases.push(`${a} ${b}`);
+  }
+
+  return uniq(phrases).slice(0, 4);
+}
+
+function quotedCoreVariant(query, phrases, anchors) {
+  const core = phrases?.[0];
+  if (!core) return null;
+
+  const coreTokens = new Set(core.split(/\s+/));
+  const remainder = (anchors || [])
+    .filter((token) => !coreTokens.has(token))
+    .slice(0, 5)
+    .join(" ");
+
+  return `"${core}" ${remainder}`.replace(/\s+/g, " ").trim();
+}
+
 function currentOrRecentYear(q) {
   const current = new Date().getUTCFullYear();
   const years = [...String(q).matchAll(/\b(20\d{2})\b/g)].map((m) => Number(m[1]));
@@ -151,6 +179,7 @@ export function analyzeQuery(query) {
     .map((x) => x.token);
 
   const phrases = [];
+  const queryPhrases = queryPhraseCandidates(q);
   const lower = q.toLowerCase();
   if (/web\s+crawler/.test(lower)) phrases.push("web crawler");
   if (/web\s+search\s+api/.test(lower)) phrases.push("web search api");
@@ -200,7 +229,8 @@ export function analyzeQuery(query) {
     if (FINANCE_SIGNAL.test(q)) {
       variants.push(`${base} economy market central bank reserves ${year}`);
     } else {
-      variants.push(`${base} announcements developments ${year}`);
+      const exact = quotedCoreVariant(q, queryPhrases, anchors);
+      variants.push(exact ? `${exact} ${year}` : `${base} ${year}`);
     }
   } else if (intent === "technical_tutorial" || intent === "technical") {
     const primaryEntity = anchors[0] || precisionAnchors[0] || "";
@@ -264,6 +294,9 @@ export function analyzeQuery(query) {
     }
   } else if (intent === "commercial") {
     variants.push(`${q.replace(/\b(best|top)\b/gi, " ")} pricing alternatives comparison`.replace(/\s+/g, " ").trim());
+  } else if (intent === "general") {
+    const exact = quotedCoreVariant(q, queryPhrases, anchors);
+    if (exact && exact.toLowerCase() !== q.toLowerCase()) variants.push(exact);
   }
 
   const strictPrecision =
@@ -276,6 +309,7 @@ export function analyzeQuery(query) {
     anchors: uniq(anchors).slice(0, 8),
     precisionAnchors,
     phrases: uniq(phrases),
+    queryPhrases,
     brand,
     comparisonTarget,
     comparisonMode,
@@ -327,6 +361,10 @@ export function relevanceScore(row, analysis) {
 
   for (const phrase of analysis.phrases) {
     if (hay.includes(phrase)) score += 5;
+  }
+
+  for (const phrase of analysis.queryPhrases || []) {
+    if (hay.includes(String(phrase).toLowerCase())) score += 7;
   }
 
   if (
