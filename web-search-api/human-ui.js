@@ -178,6 +178,14 @@ export function humanSearchPage() {
       border: 1px solid var(--line); border-radius: 16px; background: var(--surface-soft);
       padding: 24px; color: var(--muted); line-height: 1.55;
     }
+    .empty-title { color: var(--text); font-weight: 650; margin-bottom: 6px; }
+    .suggestions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+    .suggestion-btn {
+      appearance: none; border: 1px solid var(--line); background: var(--surface);
+      color: #303744; border-radius: 18px; padding: 8px 12px; cursor: pointer;
+      font-size: 12px; font-weight: 600;
+    }
+    .suggestion-btn:hover { border-color: #bcc5ff; color: var(--accent); }
     .error { color: #8c3340; background: #fff8f8; border-color: #f2d4d8; }
     .skeleton { display: grid; gap: 16px; }
     .shimmer {
