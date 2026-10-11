@@ -742,6 +742,50 @@ async function runFolkloreRelevanceProbe() {
       }));
     }
   }
+
+  for (const query of cases) {
+    const startedAt = Date.now();
+    try {
+      const structured = parseAgentSearchRequest({
+        protocol: AGENT_SEARCH_PROTOCOL,
+        query,
+        goal: "collect_evidence",
+        source_policy: "broad_web",
+        freshness: "24h",
+        depth: "quick",
+        max_results: 3,
+        crawl_budget: 4,
+        output: "passages"
+      });
+
+      const result = await liveSearch(query, {
+        limit: structured.request.limit,
+        maxDiscover: structured.request.maxDiscover,
+        maxCrawl: structured.request.maxCrawl,
+        freshSeconds: structured.request.freshSeconds,
+        analysis: structured.analysis,
+        agentRequest: structured.request
+      });
+
+      console.log("AGENT_FOLKLORE_RELEVANCE_PROBE", JSON.stringify({
+        query,
+        durationMs: Date.now() - startedAt,
+        discovery: result?.discovery || null,
+        results: (result?.results || []).map((row) => ({
+          title: row.title,
+          url: row.url,
+          content: String(row.content || "").slice(0, 500),
+          fallback: row.fallback === true
+        }))
+      }));
+    } catch (error) {
+      console.error("AGENT_FOLKLORE_RELEVANCE_PROBE_FAIL", JSON.stringify({
+        query,
+        durationMs: Date.now() - startedAt,
+        error: error?.message || String(error)
+      }));
+    }
+  }
 }
 
 async function runHumanSurfaceProbe() {
