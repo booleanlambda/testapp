@@ -4,7 +4,7 @@ import { buildRightsMetadata } from "./media-rights.js";
 
 const IMAGE_SEARCH_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
-const IMAGE_CACHE_VERSION = 3;
+const IMAGE_CACHE_VERSION = 4;
 const providerNextAllowedAt = new Map();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -60,6 +60,67 @@ function normalizeAspect(value) {
   const normalized = String(value || "any").trim().toLowerCase();
   if (["any", "square", "wide", "tall"].includes(normalized)) return normalized;
   return "any";
+}
+
+function normalizeRightsPolicy(value) {
+  const normalized = String(value || "any").trim().toLowerCase();
+  if (["any", "known", "no_attribution", "public_domain"].includes(normalized)) {
+    return normalized;
+  }
+  return "any";
+}
+
+function htmlText(value, max = 1000) {
+  const raw = clean(value, Math.max(max * 2, 2000));
+  if (!raw) return null;
+  try {
+    return clean(cheerio.load(`<div>${raw}</div>`)("div").text(), max) || null;
+  } catch {
+    return clean(raw.replace(/<[^>]+>/g, " "), max) || null;
+  }
+}
+
+function htmlFirstUrl(value, base = "https://commons.wikimedia.org") {
+  const raw = clean(value, 5000);
+  if (!raw) return null;
+  try {
+    const $ = cheerio.load(`<div>${raw}</div>`);
+    const href = $("a[href]").first().attr("href");
+    return href ? normalizeUrl(new URL(href, base).toString()) : null;
+  } catch {
+    return null;
+  }
+}
+
+function metadataValue(metadata, key) {
+  return metadata?.[key]?.value ?? null;
+}
+
+function boolish(value) {
+  if (typeof value === "boolean") return value;
+  const normalized = clean(value, 50).toLowerCase();
+  if (["true", "1", "yes", "required"].includes(normalized)) return true;
+  if (["false", "0", "no", "not required"].includes(normalized)) return false;
+  return null;
+}
+
+function rightsMatches(row, policy) {
+  if (policy === "any") return true;
+
+  const license = clean(row?.license, 200).toLowerCase();
+  const copyrightStatus = clean(row?.copyright_status, 200).toLowerCase();
+  const hasKnownRights =
+    license && license !== "unknown" ||
+    copyrightStatus && copyrightStatus !== "unknown";
+
+  if (policy === "known") return Boolean(hasKnownRights);
+  if (policy === "no_attribution") {
+    return Boolean(hasKnownRights && row?.attribution_required === false);
+  }
+  if (policy === "public_domain") {
+    return /public[_ -]?domain|cc0|pdm/.test(`${license} ${copyrightStatus}`);
+  }
+  return true;
 }
 
 const IMAGE_QUERY_STOP_WORDS = new Set([
@@ -163,6 +224,116 @@ function normalizedImageRow(row, provider, rank) {
     attribution_text: rights.attribution_text,
     rights
   };
+}
+
+
+async function discoverWikimediaCommonsImages(query, { limit }) {
+  await throttle("wikimedia-commons-images", 250);
+
+  const url = new URL("https://commons.wikimedia.org/w/api.php");
+  url.searchParams.set("action", "query");
+  url.searchParams.set("format", "json");
+  url.searchParams.set("formatversion", "2");
+  url.searchParams.set("origin", "*");
+  url.searchParams.set("generator", "search");
+  url.searchParams.set("gsrsearch", query);
+  url.searchParams.set("gsrnamespace", "6");
+  url.searchParams.set("gsrlimit", String(Math.min(Math.max(limit * 4, 24), 50)));
+  url.searchParams.set("prop", "imageinfo|info");
+  url.searchParams.set("inprop", "url");
+  url.searchParams.set("iiprop", "url|size|extmetadata");
+  url.searchParams.set("iiurlwidth", "640");
+  url.searchParams.set(
+    "iiextmetadatafilter",
+    [
+      "LicenseShortName",
+      "LicenseUrl",
+      "UsageTerms",
+      "Copyrighted",
+      "Attribution",
+      "AttributionRequired",
+      "Artist",
+      "Credit",
+      "ImageDescription",
+      "Permission",
+      "Restrictions"
+    ].join("|")
+  );
+
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": IMAGE_SEARCH_UA,
+      accept: "application/json",
+      "accept-language": "en-US,en;q=0.8"
+    },
+    signal: AbortSignal.timeout(8000)
+  });
+  if (!response.ok) throw new Error(`wikimedia_commons_images_${response.status}`);
+
+  const json = await response.json();
+  const pages = Array.isArray(json?.query?.pages) ? json.query.pages : [];
+  const rows = [];
+
+  for (const page of pages) {
+    const info = page?.imageinfo?.[0];
+    if (!info?.url) continue;
+    const metadata = info.extmetadata || {};
+
+    let license =
+      htmlText(metadataValue(metadata, "LicenseShortName"), 200) ||
+      htmlText(metadataValue(metadata, "UsageTerms"), 200) ||
+      "unknown";
+    const copyrighted = boolish(metadataValue(metadata, "Copyrighted"));
+    if (copyrighted === false && String(license).toLowerCase() === "unknown") {
+      license = "Public Domain";
+    }
+
+    const attributionRequired = boolish(metadataValue(metadata, "AttributionRequired"));
+    const attribution =
+      htmlText(metadataValue(metadata, "Attribution"), 1000) ||
+      htmlText(metadataValue(metadata, "Credit"), 1000) ||
+      null;
+    const artistRaw = metadataValue(metadata, "Artist");
+
+    const normalized = normalizedImageRow(
+      {
+        title:
+          htmlText(metadataValue(metadata, "ImageDescription"), 500) ||
+          clean(page.title || "", 500).replace(/^File:/i, ""),
+        image_url: info.url,
+        thumbnail_url: info.thumburl,
+        source_url: page.fullurl || `https://commons.wikimedia.org/wiki/${encodeURIComponent(
+          String(page.title || "").replace(/ /g, "_")
+        )}`,
+        width: info.width,
+        height: info.height,
+        creator: htmlText(artistRaw, 300),
+        creator_url: htmlFirstUrl(artistRaw),
+        license,
+        license_url: metadataValue(metadata, "LicenseUrl"),
+        copyright_notice:
+          copyrighted === true
+            ? "Source metadata marks this work as copyrighted."
+            : copyrighted === false
+              ? "Source metadata marks this work as not copyrighted/public domain."
+              : null,
+        attribution_text: attribution,
+        attribution_required: attributionRequired
+      },
+      "wikimedia-commons",
+      rows.length + 1
+    );
+
+    if (normalized) {
+      normalized.restrictions =
+        htmlText(metadataValue(metadata, "Restrictions"), 500) || null;
+      normalized.permission =
+        htmlText(metadataValue(metadata, "Permission"), 1000) || null;
+      rows.push(normalized);
+    }
+  }
+
+  return rows;
 }
 
 async function discoverSearxImages(query, { limit, safeSearch }) {
@@ -399,6 +570,7 @@ function fuseImageRows(rows, options, query) {
     if ((row.width || 0) < options.minWidth) continue;
     if ((row.height || 0) < options.minHeight) continue;
     if (!aspectMatches(row.width, row.height, options.aspect)) continue;
+    if (!rightsMatches(row, options.rightsPolicy)) continue;
 
     const relevance = imageRelevance(row, query);
     if (!relevance.matched) continue;
@@ -429,6 +601,7 @@ export async function searchImages(query, options = {}) {
     limit: clampInt(options.limit || options.maxResults, 12, 1, 30),
     safeSearch: normalizeSafeSearch(options.safeSearch || options.safe_search),
     aspect: normalizeAspect(options.aspect),
+    rightsPolicy: normalizeRightsPolicy(options.rights || options.rightsPolicy || options.rights_policy),
     minWidth: clampInt(options.minWidth || options.min_width, 0, 0, 10000),
     minHeight: clampInt(options.minHeight || options.min_height, 0, 0, 10000),
     preferredDomains: Array.isArray(options.preferredDomains || options.preferred_domains)
@@ -441,8 +614,8 @@ export async function searchImages(query, options = {}) {
   };
 
   const providerSet = process.env.SEARCH_DISCOVERY_BASE_URL
-    ? "searxng-images+duckduckgo-images+bing-images"
-    : "duckduckgo-images+bing-images";
+    ? "wikimedia-commons+searxng-images+duckduckgo-images+bing-images"
+    : "wikimedia-commons+duckduckgo-images+bing-images";
 
   const cacheKey = sha256(JSON.stringify({
     cacheVersion: IMAGE_CACHE_VERSION,
@@ -461,6 +634,12 @@ export async function searchImages(query, options = {}) {
 
   const attempts = [];
   const jobs = [];
+
+  jobs.push(
+    discoverWikimediaCommonsImages(q, normalized)
+      .then((rows) => ({ provider: "wikimedia-commons", rows }))
+      .catch((error) => ({ provider: "wikimedia-commons", rows: [], error: error?.message }))
+  );
 
   if (process.env.SEARCH_DISCOVERY_BASE_URL) {
     jobs.push(
@@ -507,13 +686,14 @@ export async function searchImages(query, options = {}) {
     filters: {
       safe_search: normalized.safeSearch,
       aspect: normalized.aspect,
+      rights: normalized.rightsPolicy,
       min_width: normalized.minWidth,
       min_height: normalized.minHeight,
       preferred_domains: normalized.preferredDomains,
       excluded_domains: normalized.excludedDomains
     },
     rights_notice:
-      "Image discovery returns upstream rights metadata when explicitly available, but does not grant reuse rights. rights_verified=false means the caller must verify license, attribution, and copyright on source_url before reuse or redistribution."
+      "Image discovery returns upstream rights metadata when explicitly available. The rights filter operates on source claims, not independent legal verification. rights_verified=false means the caller must verify license, attribution, restrictions, and copyright on source_url before reuse or redistribution."
   };
 
   void setDiscoveryCache(cacheKey, value, normalized.cacheTtl).catch(() => {});
