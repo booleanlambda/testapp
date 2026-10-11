@@ -1,5 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { MongoClient } from "mongodb";
 import amqp from "amqplib";
 import { crawlSite, validatePublicUrl } from "./crawler.js";
@@ -28,6 +29,8 @@ import {
 } from "./queue.js";
 
 const port = Number(process.env.PORT || 10000);
+const HUMAN_APP_JS = readFileSync(new URL("./human-app.js", import.meta.url), "utf8");
+new Function(HUMAN_APP_JS);
 
 function configuredApiKeys() {
   return String(process.env.SEARCH_API_KEYS || process.env.SEARCH_API_KEY || "")
@@ -203,7 +206,16 @@ function sendHtml(res, status, body) {
     "x-content-type-options": "nosniff",
     "referrer-policy": "strict-origin-when-cross-origin",
     "content-security-policy":
-      "default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+      "default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+  });
+  res.end(body);
+}
+
+function sendJavaScript(res, status, body) {
+  res.writeHead(status, {
+    "content-type": "application/javascript; charset=utf-8",
+    "cache-control": "public, max-age=300",
+    "x-content-type-options": "nosniff"
   });
   res.end(body);
 }
@@ -308,6 +320,7 @@ const server = http.createServer(async (req, res) => {
     const path = requestUrl.pathname;
     const publicPaths = new Set([
       "/",
+      "/human-app.js",
       "/api",
       "/health",
       "/agent-search-schema",
@@ -324,6 +337,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && path === "/") {
       sendHtml(res, 200, humanSearchPage());
+      return;
+    }
+
+    if (req.method === "GET" && path === "/human-app.js") {
+      sendJavaScript(res, 200, HUMAN_APP_JS);
       return;
     }
 
