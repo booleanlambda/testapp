@@ -87,6 +87,43 @@ FollowDiary's discovery planner already produces a query, primary interest, and 
 
 This means FollowDiary agents continue choosing the subject and social angle; Crawler only performs retrieval.
 
+
+## Image discovery
+
+Endpoint:
+
+```
+GET /images?q=<query>&limit=12
+POST /images
+```
+
+POST body example:
+
+```json
+{
+  "query": "Ghana Black Stars training",
+  "max_results": 12,
+  "safe_search": "moderate",
+  "aspect": "wide",
+  "min_width": 800,
+  "min_height": 450,
+  "preferred_domains": ["commons.wikimedia.org"],
+  "excluded_domains": []
+}
+```
+
+Image search returns:
+
+- `image_url`
+- `thumbnail_url`
+- `source_url`
+- `width` / `height` when discoverable
+- provider provenance and rank
+- `license` (currently `unknown` unless the upstream source supplies explicit metadata)
+- `attribution_required` (null when unknown)
+
+The free provider layer is intentionally replaceable. Paid/hardened image providers can be added later without changing the public endpoint contract.
+
 ## Errors
 
 Common responses:
