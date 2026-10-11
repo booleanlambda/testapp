@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 59;
+const DISCOVERY_CACHE_VERSION = 60;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -204,12 +204,42 @@ function generalEntityContext(analysis) {
   return { corePhrase, contextAnchors };
 }
 
+const PERSON_QUERY_TERMS = new Set([
+  "guy","guys","man","men","woman","women","gal","gals","person","people",
+  "boy","boys","girl","girls","kid","kids","child","children"
+]);
+
+function descriptivePersonRoleRequired(analysis) {
+  const queryTerms = new Set([
+    ...(analysis?.anchors || []),
+    ...String(analysis?.semanticVariant || "").toLowerCase().split(/\s+/)
+  ]);
+  return [...queryTerms].some((term) => PERSON_QUERY_TERMS.has(term));
+}
+
+function rowHasPersonRole(row) {
+  const hay = normalizedWordString(
+    (row?.title || "") + " " + (row?.snippet || "") + " " + (row?.url || "")
+  );
+  return [...PERSON_QUERY_TERMS].some((term) =>
+    hay.includes(" " + term + " ")
+  );
+}
+
 function passesGeneralCoverage(row, analysis) {
   if (analysis?.strictPrecision) return true;
   if (analysis?.intent?.startsWith("technical")) return true;
 
   const anchors = Array.isArray(analysis?.anchors) ? analysis.anchors : [];
   if (anchors.length < 2) return true;
+
+  if (
+    (analysis?.descriptivePhrases || []).length &&
+    descriptivePersonRoleRequired(analysis) &&
+    !rowHasPersonRole(row)
+  ) {
+    return false;
+  }
 
   const { anchorHits, phraseHits } = rowCoverage(row, analysis);
   const { corePhrase, contextAnchors } = generalEntityContext(analysis);
@@ -1883,7 +1913,7 @@ async function runVariant(query, analysis, limit) {
     ) {
       const fullTextRows = await boundedValue(
         discoverWikipediaFullText(
-          analysis.semanticVariant || analysis.relationalVariant || query,
+          analysis.descriptiveConjunctive || analysis.semanticVariant || analysis.relationalVariant || query,
           limit
         ),
         3200,
@@ -1893,7 +1923,7 @@ async function runVariant(query, analysis, limit) {
       if (fullTextRows.length) rows.push(...fullTextRows);
       attempts.push({
         provider: "wikipedia-fulltext",
-        query: analysis.semanticVariant || analysis.relationalVariant || query,
+        query: analysis.descriptiveConjunctive || analysis.semanticVariant || analysis.relationalVariant || query,
         ok: fuse(fullTextRows, analysis, limit).length > 0
       });
     }
@@ -2213,7 +2243,7 @@ async function runVariant(query, analysis, limit) {
         (analysis.descriptivePhrases || []).length
           ? boundedValue(
               discoverWikipediaFullText(
-                analysis.semanticVariant || analysis.relationalVariant || query,
+                analysis.descriptiveConjunctive || analysis.semanticVariant || analysis.relationalVariant || query,
                 limit
               ),
               3200,
