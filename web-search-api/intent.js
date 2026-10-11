@@ -415,8 +415,15 @@ export function analyzeQuery(query) {
   const entityPhrases = entityPhraseCandidates(q, queryPhrases);
   const descriptivePhrases = queryPhrases.filter((phrase) => phraseHasConnector(phrase));
   const semanticVariant = colloquialSemanticVariant(q, descriptivePhrases);
+  const semanticPhraseVariant =
+    descriptivePhrases.length
+      ? (
+          colloquialSemanticVariant(descriptivePhrases[0], descriptivePhrases) ||
+          descriptivePhrases[0]
+        )
+      : null;
   const descriptiveConjunctive =
-    descriptiveConjunctiveVariant(semanticVariant || descriptivePhrases[0] || "");
+    descriptiveConjunctiveVariant(semanticPhraseVariant || "");
   const lower = q.toLowerCase();
   if (/web\s+crawler/.test(lower)) phrases.push("web crawler");
   if (/web\s+search\s+api/.test(lower)) phrases.push("web search api");
