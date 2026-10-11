@@ -533,7 +533,9 @@ async function runMediaProbe() {
         return {
           passed: rows.length > 0 &&
             rows.some((row) => row?.image_url && row?.source_url) &&
-            rows.every((row) => row?.license != null && row?.copyright_status != null),
+            rows.every((row) => row?.license != null && row?.copyright_status != null) &&
+            rows.filter((row) => /accra|ghana|skyline/i.test(`${row?.title || ""} ${row?.source_url || ""}`)).length >=
+              Math.min(3, rows.length),
           payload: {
             provider: result?.provider || null,
             providers: result?.providers || [],
