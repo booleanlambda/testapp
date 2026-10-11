@@ -322,11 +322,20 @@ function normalizeConcept(value) {
 
 export async function enrichQueryAnalysis(query, fallback) {
   const deterministicHighConfidence =
-    fallback.intent !== "general" &&
     (
-      fallback.strictPrecision ||
-      fallback.intent === "news" ||
-      fallback.intent === "commercial"
+      fallback.intent !== "general" &&
+      (
+        fallback.strictPrecision ||
+        fallback.intent === "news" ||
+        fallback.intent === "commercial"
+      )
+    ) ||
+    (
+      fallback.intent === "general" &&
+      (
+        (fallback.queryPhrases || []).length > 0 ||
+        (fallback.anchors || []).length >= 2
+      )
     );
 
   if (deterministicHighConfidence) {
