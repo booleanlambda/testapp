@@ -305,7 +305,7 @@ async function discoverBingHtml(query, limit) {
       "user-agent": DISCOVERY_UA,
       accept: "text/html,application/xhtml+xml"
     },
-    signal: AbortSignal.timeout(3500)
+    signal: AbortSignal.timeout(4500)
   });
   if (!response.ok) throw new Error(`bing_html_${response.status}`);
 
@@ -1111,7 +1111,7 @@ async function discoverDuckDuckGoHtml(query, limit) {
       "user-agent": DISCOVERY_UA,
       accept: "text/html,application/xhtml+xml"
     },
-    signal: AbortSignal.timeout(12000)
+    signal: AbortSignal.timeout(3500)
   });
   if (!response.ok) throw new Error(`ddg_html_${response.status}`);
 
@@ -1140,7 +1140,7 @@ async function discoverDuckDuckGoLite(query, limit) {
       "user-agent": DISCOVERY_UA,
       accept: "text/html,application/xhtml+xml"
     },
-    signal: AbortSignal.timeout(6500)
+    signal: AbortSignal.timeout(3500)
   });
   if (!response.ok) throw new Error(`ddg_lite_${response.status}`);
 
