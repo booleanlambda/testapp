@@ -48,6 +48,30 @@ const PHRASE_CONNECTORS = new Set([
 
 const PHRASE_DETERMINERS = new Set(["a","an","the","this","that","these","those"]);
 
+const GENERIC_SHORT_ANCHORS = new Set([
+  "new","old","one","two","use","used","get","got","see","saw","say","way",
+  "via","per","etc","now","out","off","all","any","our","your"
+]);
+
+function phraseHasConnector(phrase) {
+  return words(phrase).some((token) => PHRASE_CONNECTORS.has(token));
+}
+
+function explicitQuotedPhrases(query) {
+  const phrases = [];
+  for (const match of String(query).matchAll(/["“”]([^"“”]{3,120})["“”]/g)) {
+    const normalized = normalizePhraseText(match[1]);
+    if (normalized) phrases.push(normalized);
+  }
+  return uniq(phrases);
+}
+
+function entityPhraseCandidates(query, queryPhrases) {
+  const quoted = explicitQuotedPhrases(query);
+  const inferred = (queryPhrases || []).filter((phrase) => !phraseHasConnector(phrase));
+  return uniq([...quoted, ...inferred]).slice(0, 6);
+}
+
 function normalizePhraseText(value) {
   return words(value).join(" ").trim();
 }
@@ -264,7 +288,8 @@ export function analyzeQuery(query) {
 
   const content = tokens.filter((t) => !STOP.has(t));
   const anchors = uniq(content.filter((t) => {
-    if (t.length < 4) return false;
+    if (t.length < 3) return false;
+    if (t.length === 3 && GENERIC_SHORT_ANCHORS.has(t)) return false;
     if (GENERIC_TECH.has(t)) return false;
     return true;
   }));
@@ -300,6 +325,7 @@ export function analyzeQuery(query) {
 
   const phrases = [];
   const queryPhrases = queryPhraseCandidates(q);
+  const entityPhrases = entityPhraseCandidates(q, queryPhrases);
   const lower = q.toLowerCase();
   if (/web\s+crawler/.test(lower)) phrases.push("web crawler");
   if (/web\s+search\s+api/.test(lower)) phrases.push("web search api");
@@ -349,7 +375,7 @@ export function analyzeQuery(query) {
     if (FINANCE_SIGNAL.test(q)) {
       variants.push(`${base} economy market central bank reserves ${year}`);
     } else {
-      const exact = quotedCoreVariant(q, queryPhrases, anchors);
+      const exact = quotedCoreVariant(q, entityPhrases, anchors);
       variants.push(exact ? `${exact} ${year}` : `${base} ${year}`);
     }
   } else if (intent === "technical_tutorial" || intent === "technical") {
@@ -415,8 +441,13 @@ export function analyzeQuery(query) {
   } else if (intent === "commercial") {
     variants.push(`${q.replace(/\b(best|top)\b/gi, " ")} pricing alternatives comparison`.replace(/\s+/g, " ").trim());
   } else if (intent === "general") {
-    const exact = quotedCoreVariant(q, queryPhrases, anchors);
-    if (exact && exact.toLowerCase() !== q.toLowerCase()) variants.push(exact);
+    const exact = quotedCoreVariant(q, entityPhrases, anchors);
+    if (exact && exact.toLowerCase() !== q.toLowerCase()) {
+      variants.push(exact);
+    } else if (queryPhrases.some((phrase) => phraseHasConnector(phrase)) && anchors.length >= 2) {
+      const relaxed = anchors.slice(0, 6).join(" ");
+      if (relaxed && relaxed.toLowerCase() !== q.toLowerCase()) variants.push(relaxed);
+    }
   }
 
   const strictPrecision =
@@ -430,6 +461,8 @@ export function analyzeQuery(query) {
     precisionAnchors,
     phrases: uniq(phrases),
     queryPhrases,
+    entityPhrases,
+    descriptivePhrases: queryPhrases.filter((phrase) => phraseHasConnector(phrase)),
     brand,
     comparisonTarget,
     comparisonMode,
