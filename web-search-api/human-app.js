@@ -123,21 +123,44 @@
     );
   }
 
-  function renderEmpty() {
-    els.meta.textContent = "No matching results";
-    replaceResults(
+  function renderEmpty(data) {
+    els.meta.textContent = "No strong match";
+
+    const box = node("div", "empty");
+    box.appendChild(node("div", "empty-title", "Crawler could not find a strong match."));
+    box.appendChild(
       node(
         "div",
-        "empty",
-        "Crawler could not find a strong match. Try a broader query."
+        "",
+        "Rather than show weak or off-topic results, try one of these reformulations."
       )
     );
+
+    const suggestions = Array.isArray(data?.suggestions)
+      ? data.suggestions.filter(Boolean).slice(0, 3)
+      : [];
+
+    if (suggestions.length) {
+      const wrap = node("div", "suggestions");
+      suggestions.forEach((query) => {
+        const button = node("button", "suggestion-btn", query);
+        button.type = "button";
+        button.addEventListener("click", () => {
+          state.q = String(query);
+          runSearch();
+        });
+        wrap.appendChild(button);
+      });
+      box.appendChild(wrap);
+    }
+
+    replaceResults(box);
   }
 
   function renderWeb(data, elapsed) {
     const rows = Array.isArray(data.results) ? data.results : [];
     if (!rows.length) {
-      renderEmpty();
+      renderEmpty(data);
       return;
     }
 
