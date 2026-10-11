@@ -101,8 +101,8 @@ function relationalAnchorVariant(descriptivePhrases, anchors) {
     .slice(0, 4);
 
   return [
-    `"${left}"`,
-    `"${right}"`,
+    right,
+    left,
     ...remainder
   ].join(" ").trim();
 }
