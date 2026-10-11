@@ -24,6 +24,7 @@ For structured requests, Crawler does not need an LLM planner in the response pa
 - OpenAPI: `GET /openapi.json`
 - Search: `POST /search`
 - Images: `GET /images?q=...` or `POST /images`
+- Videos: `GET /videos?q=...` or `POST /videos`
 
 The current Render deployment is configured separately from this repository. Do not commit API keys or infrastructure secrets.
 
@@ -125,7 +126,19 @@ or:
 
 The free path uses SearxNG image results when configured and Bing Images HTML as the fallback. Responses return the direct image URL, thumbnail URL, source page, dimensions when available, provider provenance, and a rights status.
 
-Crawler does **not** infer permission to reuse an image. When `license` is `unknown`, the caller should inspect `source_url` before publishing or redistributing the asset. A hardened paid provider can later be added behind the same `/images` contract without changing clients.
+Crawler does **not** infer permission to reuse an image. Media results expose a normalized `rights` object with `license`, `license_url`, `copyright_status`, `copyright_notice`, creator fields, attribution fields, and `rights_verified`. Explicit upstream Creative Commons/public-domain claims can populate those fields, but `rights_verified=false` means the source page still needs verification before reuse or redistribution. A hardened paid provider can later be added behind the same contract without changing clients.
+
+## Video search
+
+Crawler v0.8 adds first-class video discovery:
+
+```
+GET /videos?q=Ghana+football&limit=12
+```
+
+The free path uses SearxNG video results when configured and direct YouTube discovery as a fallback. Results return the canonical video page, thumbnail, creator/channel, duration when available, publication/view text, provider provenance, and the same normalized rights metadata used for images.
+
+Crawler links to videos; it does not download or rehost them.
 
 ## Local run
 
