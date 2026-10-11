@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 47;
+const DISCOVERY_CACHE_VERSION = 48;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -275,7 +275,7 @@ async function discoverBingNews(query, limit) {
       "user-agent": DISCOVERY_UA,
       accept: "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.1"
     },
-    signal: AbortSignal.timeout(12000)
+    signal: AbortSignal.timeout(3500)
   });
   if (!response.ok) throw new Error(`bing_news_${response.status}`);
 
@@ -305,7 +305,7 @@ async function discoverBingHtml(query, limit) {
       "user-agent": DISCOVERY_UA,
       accept: "text/html,application/xhtml+xml"
     },
-    signal: AbortSignal.timeout(6500)
+    signal: AbortSignal.timeout(3500)
   });
   if (!response.ok) throw new Error(`bing_html_${response.status}`);
 
@@ -1158,12 +1158,54 @@ async function discoverDuckDuckGoLite(query, limit) {
 }
 
 async function discoverDuckDuckGo(query, limit) {
-  try {
-    const html = await discoverDuckDuckGoHtml(query, limit);
-    if (html.length) return html;
-  } catch {}
+  const jobs = [
+    boundedValue(discoverDuckDuckGoHtml(query, limit), 3800, []),
+    boundedValue(discoverDuckDuckGoLite(query, limit), 3800, [])
+  ];
 
-  return discoverDuckDuckGoLite(query, limit);
+  return firstUsefulValue(
+    jobs,
+    (rows) => Array.isArray(rows) && rows.length > 0,
+    4000,
+    []
+  );
+}
+
+async function discoverWikipedia(query, limit) {
+  await throttle("wikipedia", 150);
+
+  const url = new URL("https://en.wikipedia.org/w/api.php");
+  url.searchParams.set("action", "query");
+  url.searchParams.set("list", "search");
+  url.searchParams.set("srsearch", query);
+  url.searchParams.set("format", "json");
+  url.searchParams.set("formatversion", "2");
+  url.searchParams.set("origin", "*");
+  url.searchParams.set("srlimit", String(Math.min(Math.max(limit, 5), 10)));
+
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": DISCOVERY_UA,
+      accept: "application/json"
+    },
+    signal: AbortSignal.timeout(3500)
+  });
+  if (!response.ok) throw new Error(`wikipedia_search_${response.status}`);
+
+  const json = await response.json();
+  const rows = (json?.query?.search || []).map((item, index) => ({
+    title: item.title || null,
+    url: item.pageid
+      ? `https://en.wikipedia.org/?curid=${item.pageid}`
+      : `https://en.wikipedia.org/wiki/${encodeURIComponent(String(item.title || "").replace(/ /g, "_"))}`,
+    snippet: cheerio.load(`<div>${item.snippet || ""}</div>`)("div").text().replace(/\s+/g, " ").trim(),
+    publishedAt: null,
+    provider: "wikipedia-search",
+    rank: index + 1,
+    queryEvidence: []
+  }));
+
+  return normalizeRows(rows.slice(0, limit), "wikipedia-search");
 }
 
 function scoreOfficialUrl(url, analysis, parentScore = 0) {
@@ -1765,12 +1807,32 @@ async function runVariant(query, analysis, limit) {
     ) &&
     !(analysis.strictPrecision && analysis.brand)
   ) {
-    try {
-      const found = await discoverDuckDuckGo(query, limit);
-      rows.push(...found);
-      attempts.push({ provider: found[0]?.provider || "duckduckgo", query, ok: found.length > 0 });
-    } catch (error) {
-      attempts.push({ provider: "duckduckgo", query, ok: false, error: error?.message });
+    const rescueJobs = [
+      boundedValue(discoverDuckDuckGo(query, limit), 4200, [])
+        .then((found) => ({
+          provider: found[0]?.provider || "duckduckgo",
+          found
+        }))
+    ];
+
+    if (!analysis.intent.startsWith("technical")) {
+      rescueJobs.push(
+        boundedValue(discoverWikipedia(query, limit), 3800, [])
+          .then((found) => ({
+            provider: "wikipedia-search",
+            found
+          }))
+      );
+    }
+
+    const settled = await Promise.all(rescueJobs);
+    for (const rescue of settled) {
+      if (rescue.found.length) rows.push(...rescue.found);
+      attempts.push({
+        provider: rescue.provider,
+        query,
+        ok: rescue.found.length > 0
+      });
     }
   }
 
