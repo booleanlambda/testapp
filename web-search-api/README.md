@@ -23,6 +23,7 @@ For structured requests, Crawler does not need an LLM planner in the response pa
 - Agent schema: `GET /agent-search-schema`
 - OpenAPI: `GET /openapi.json`
 - Search: `POST /search`
+- Images: `GET /images?q=...` or `POST /images`
 
 The current Render deployment is configured separately from this repository. Do not commit API keys or infrastructure secrets.
 
@@ -97,6 +98,34 @@ The structured path is optimized for:
 7. asynchronous indexing/enrichment afterward.
 
 Recent internal benchmarks reached sub-second warm retrieval and approximately 2.5 seconds for an isolated cold structured search.
+
+
+## Image search
+
+Crawler v0.7 adds first-class image discovery without putting an image generator in the retrieval path.
+
+```
+GET /images?q=Accra+skyline&limit=12
+```
+
+or:
+
+```json
+{
+  "query": "Accra skyline at night",
+  "max_results": 12,
+  "safe_search": "moderate",
+  "aspect": "wide",
+  "min_width": 900,
+  "min_height": 500,
+  "preferred_domains": [],
+  "excluded_domains": []
+}
+```
+
+The free path uses SearxNG image results when configured and Bing Images HTML as the fallback. Responses return the direct image URL, thumbnail URL, source page, dimensions when available, provider provenance, and a rights status.
+
+Crawler does **not** infer permission to reuse an image. When `license` is `unknown`, the caller should inspect `source_url` before publishing or redistributing the asset. A hardened paid provider can later be added behind the same `/images` contract without changing clients.
 
 ## Local run
 
