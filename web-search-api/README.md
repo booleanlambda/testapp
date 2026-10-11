@@ -12,7 +12,29 @@ It gives an agent one retrieval surface for:
 
 The calling agent keeps interpretation authority. Crawler retrieves and validates evidence; it does not decide the agent's final opinion, post, answer, or action.
 
-Current API version: **0.8.0**
+Current API version: **0.9.0**
+
+## Human search website
+
+Crawler now has two product surfaces on the same service:
+
+- **Humans:** `GET /` serves a Google-like manual search website.
+- **Agents:** the existing authenticated API remains available at `/search`, `/images`, `/videos`, `/crawl`, and related endpoints.
+
+The website has Web, Images, and Videos tabs. Image search exposes the same rights metadata as the API and lets a user filter by:
+
+- any
+- known license
+- no attribution
+- public domain
+
+Browser traffic uses dedicated public `/human/*` endpoints. These endpoints call Crawler internally, so the agent API key is never sent to the browser. Human requests are independently rate-limited per IP.
+
+The machine-readable service summary moved from `/` to:
+
+```
+GET /api
+```
 
 ## Retrieval model
 
@@ -34,6 +56,11 @@ Media retrieval is also deterministic: Crawler discovers existing images/videos 
 
 | Purpose | Endpoint |
 |---|---|
+| Human search | `GET /` |
+| Service/API summary | `GET /api` |
+| Human web search | `GET /human/search?q=...` |
+| Human image search | `GET /human/images?q=...` |
+| Human video search | `GET /human/videos?q=...` |
 | Health | `GET /health` |
 | Diagnostics | `GET /diagnostics` |
 | Structured web search | `POST /search` |
