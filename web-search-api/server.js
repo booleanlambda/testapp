@@ -7,6 +7,7 @@ import { searchIndex } from "./search.js";
 import { liveSearch } from "./live-search.js";
 import { discoverWeb } from "./discovery.js";
 import { searchImages } from "./image-search.js";
+import { searchVideos } from "./video-search.js";
 import { AGENT_SEARCH_PROTOCOL, agentSearchSchema, parseAgentSearchRequest } from "./agent-request.js";
 import { openApiSpec } from "./api-spec.js";
 import {
@@ -243,7 +244,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && path === "/") {
       sendJson(res, 200, {
         service: "web-search-api",
-        version: "0.7.0",
+        version: "0.8.0",
         endpoints: {
           health: "GET /health",
           diagnostics: "GET /diagnostics",
@@ -254,13 +255,15 @@ const server = http.createServer(async (req, res) => {
           agentSchema: "GET /agent-search-schema",
           openapi: "GET /openapi.json",
           discover: "GET /discover?q=...",
-          images: "POST /images or GET /images?q=..."
+          images: "POST /images or GET /images?q=...",
+          videos: "POST /videos or GET /videos?q=..."
         },
         limits: {
           crawlMaxPages: 10,
           crawlMaxDepth: 2,
           searchMaxResults: 20,
-          imageSearchMaxResults: 30
+          imageSearchMaxResults: 30,
+          videoSearchMaxResults: 30
         }
       });
       return;
@@ -417,6 +420,45 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if ((req.method === "POST" || req.method === "GET") && path === "/videos") {
+      const body = req.method === "POST" ? await readJson(req) : {};
+      const query = body.query || body.q || requestUrl.searchParams.get("q");
+      if (!query) {
+        sendJson(res, 400, { error: "query_required" });
+        return;
+      }
+
+      const result = await searchVideos(query, {
+        limit:
+          body.max_results ||
+          body.limit ||
+          requestUrl.searchParams.get("limit") ||
+          requestUrl.searchParams.get("max_results") ||
+          12,
+        safe_search:
+          body.safe_search ||
+          body.safeSearch ||
+          requestUrl.searchParams.get("safe_search") ||
+          "moderate",
+        preferred_domains:
+          body.preferred_domains ||
+          body.preferredDomains ||
+          [],
+        excluded_domains:
+          body.excluded_domains ||
+          body.excludedDomains ||
+          [],
+        cache_ttl:
+          body.cache_ttl ||
+          body.cacheTtl ||
+          requestUrl.searchParams.get("cache_ttl") ||
+          1800
+      });
+
+      sendJson(res, 200, result);
+      return;
+    }
+
     if ((req.method === "POST" || req.method === "GET") && path === "/search") {
       const body = req.method === "POST" ? await readJson(req) : {};
       if (body.protocol && body.protocol !== AGENT_SEARCH_PROTOCOL) {
@@ -549,7 +591,7 @@ async function runStructuredLatencyProbe() {
 }
 
 server.listen(port, "0.0.0.0", async () => {
-  console.log(`web-search-api v0.7.0 listening on ${port}`);
+  console.log(`web-search-api v0.8.0 listening on ${port}`);
 
   try {
     await ensureIndexes();
