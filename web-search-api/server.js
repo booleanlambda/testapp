@@ -391,6 +391,12 @@ const server = http.createServer(async (req, res) => {
           requestUrl.searchParams.get("safe_search") ||
           "moderate",
         aspect: body.aspect || requestUrl.searchParams.get("aspect") || "any",
+        rights:
+          body.rights ||
+          body.rights_policy ||
+          body.rightsPolicy ||
+          requestUrl.searchParams.get("rights") ||
+          "any",
         min_width:
           body.min_width ||
           body.minWidth ||
