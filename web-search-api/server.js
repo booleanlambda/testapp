@@ -706,6 +706,44 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+async function runFolkloreRelevanceProbe() {
+  const cases = [
+    "Pine Barrens folklore recent mysteries New Jersey",
+    "Jersey Devil legends"
+  ];
+
+  for (const query of cases) {
+    const startedAt = Date.now();
+    try {
+      const result = await discoverWeb(query, {
+        limit: 10,
+        cacheTtl: 30,
+        debug: true
+      });
+      console.log("FOLKLORE_RELEVANCE_PROBE", JSON.stringify({
+        query,
+        durationMs: Date.now() - startedAt,
+        provider: result?.provider || null,
+        providers: result?.providers || [],
+        cached: result?.cached === true,
+        results: (result?.results || []).map((row) => ({
+          rank: row.rank,
+          relevance: row.relevance,
+          title: row.title,
+          url: row.url,
+          snippet: row.snippet,
+          provider: row.provider
+        }))
+      }));
+    } catch (error) {
+      console.error("FOLKLORE_RELEVANCE_PROBE_FAIL", JSON.stringify({
+        query,
+        error: error?.message || String(error)
+      }));
+    }
+  }
+}
+
 async function runHumanSurfaceProbe() {
   const base = `http://127.0.0.1:${port}`;
   const startedAt = Date.now();
@@ -1061,6 +1099,7 @@ server.listen(port, "0.0.0.0", async () => {
   const runLatencyProbe = process.env.RUN_STARTUP_LATENCY_PROBE === "1";
   const runMediaProbeEnabled = process.env.RUN_STARTUP_MEDIA_PROBE === "1";
   const runHumanSurfaceProbeEnabled = process.env.RUN_STARTUP_HUMAN_SURFACE_PROBE === "1";
+  const runFolkloreRelevanceProbeEnabled = process.env.RUN_STARTUP_FOLKLORE_RELEVANCE_PROBE === "1";
   const runFullRegressions = process.env.RUN_STARTUP_REGRESSIONS === "1";
 
   if (runLatencyProbe) {
@@ -1075,11 +1114,16 @@ server.listen(port, "0.0.0.0", async () => {
     void runHumanSurfaceProbe();
   }
 
+  if (runFolkloreRelevanceProbeEnabled) {
+    void runFolkloreRelevanceProbe();
+  }
+
   if (!runFullRegressions) {
     console.log("startup regressions disabled", JSON.stringify({
       latencyProbe: runLatencyProbe,
       mediaProbe: runMediaProbeEnabled,
       humanSurfaceProbe: runHumanSurfaceProbeEnabled,
+      folkloreRelevanceProbe: runFolkloreRelevanceProbeEnabled,
       fullRegressions: false
     }));
     return;
