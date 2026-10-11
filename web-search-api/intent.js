@@ -319,16 +319,11 @@ export function analyzeQuery(query) {
 }
 
 function escapeRegex(value) {
-  return String(value || "").replace(/[.*+?^$()|[\]\\]/g, "\\function countOccurrences(haystack, needle) {
-  if (!needle) return 0;
-  let n = 0;
-  let i = 0;
-  while ((i = haystack.indexOf(needle, i)) >= 0) {
-    n++;
-    i += needle.length;
-  }
-  return n;
-}");
+  const specials = "\\.^$*+?()[]{}|";
+  return String(value || "")
+    .split("")
+    .map((ch) => specials.includes(ch) ? "\\" + ch : ch)
+    .join("");
 }
 
 function countOccurrences(haystack, needle) {
