@@ -633,45 +633,76 @@ export async function searchImages(query, options = {}) {
   } catch {}
 
   const attempts = [];
-  const jobs = [];
+  let commonsRows = [];
 
-  jobs.push(
-    discoverWikimediaCommonsImages(q, normalized)
-      .then((rows) => ({ provider: "wikimedia-commons", rows }))
-      .catch((error) => ({ provider: "wikimedia-commons", rows: [], error: error?.message }))
-  );
-
-  if (process.env.SEARCH_DISCOVERY_BASE_URL) {
-    jobs.push(
-      discoverSearxImages(q, normalized)
-        .then((rows) => ({ provider: "searxng-images", rows }))
-        .catch((error) => ({ provider: "searxng-images", rows: [], error: error?.message }))
-    );
+  try {
+    commonsRows = await Promise.race([
+      discoverWikimediaCommonsImages(q, normalized),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("wikimedia_commons_timeout")), 4500)
+      )
+    ]);
+    attempts.push({
+      provider: "wikimedia-commons",
+      ok: commonsRows.length > 0,
+      resultCount: commonsRows.length
+    });
+  } catch (error) {
+    attempts.push({
+      provider: "wikimedia-commons",
+      ok: false,
+      resultCount: 0,
+      error: error?.message
+    });
   }
 
-  jobs.push(
-    discoverDuckDuckGoImages(q, normalized)
-      .then((rows) => ({ provider: "duckduckgo-images", rows }))
-      .catch((error) => ({ provider: "duckduckgo-images", rows: [], error: error?.message }))
-  );
+  const commonsResults = fuseImageRows(commonsRows, normalized, q);
+  const commonsEnough = commonsResults.length >= Math.min(normalized.limit, 5);
 
-  jobs.push(
-    discoverBingImages(q, normalized)
-      .then((rows) => ({ provider: "bing-images-html", rows }))
-      .catch((error) => ({ provider: "bing-images-html", rows: [], error: error?.message }))
-  );
+  let allRows = [...commonsRows];
 
-  const settled = await Promise.all(jobs);
-  const allRows = [];
+  if (!commonsEnough) {
+    const jobs = [];
 
-  for (const item of settled) {
+    if (process.env.SEARCH_DISCOVERY_BASE_URL) {
+      jobs.push(
+        discoverSearxImages(q, normalized)
+          .then((rows) => ({ provider: "searxng-images", rows }))
+          .catch((error) => ({ provider: "searxng-images", rows: [], error: error?.message }))
+      );
+    }
+
+    jobs.push(
+      discoverDuckDuckGoImages(q, normalized)
+        .then((rows) => ({ provider: "duckduckgo-images", rows }))
+        .catch((error) => ({ provider: "duckduckgo-images", rows: [], error: error?.message }))
+    );
+
+    jobs.push(
+      discoverBingImages(q, normalized)
+        .then((rows) => ({ provider: "bing-images-html", rows }))
+        .catch((error) => ({ provider: "bing-images-html", rows: [], error: error?.message }))
+    );
+
+    const settled = await Promise.all(jobs);
+
+    for (const item of settled) {
+      attempts.push({
+        provider: item.provider,
+        ok: item.rows.length > 0,
+        resultCount: item.rows.length,
+        ...(item.error ? { error: item.error } : {})
+      });
+      allRows.push(...item.rows);
+    }
+  } else {
     attempts.push({
-      provider: item.provider,
-      ok: item.rows.length > 0,
-      resultCount: item.rows.length,
-      ...(item.error ? { error: item.error } : {})
+      provider: "fallbacks",
+      ok: true,
+      resultCount: 0,
+      skipped: true,
+      reason: "wikimedia_commons_sufficient"
     });
-    allRows.push(...item.rows);
   }
 
   const results = fuseImageRows(allRows, normalized, q);
