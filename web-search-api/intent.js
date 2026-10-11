@@ -72,6 +72,40 @@ function entityPhraseCandidates(query, queryPhrases) {
   return uniq([...quoted, ...inferred]).slice(0, 6);
 }
 
+function colloquialSemanticVariant(query, descriptivePhrases) {
+  if (!(descriptivePhrases || []).length) return null;
+
+  const tokens = words(query);
+  if (!tokens.length) return null;
+
+  const personMap = new Map([
+    ["guy", "man"],
+    ["guys", "men"],
+    ["gal", "woman"],
+    ["gals", "women"],
+    ["kid", "child"],
+    ["kids", "children"]
+  ]);
+
+  let changed = false;
+  const rewritten = tokens.map((token) => {
+    if (personMap.has(token)) {
+      changed = true;
+      return personMap.get(token);
+    }
+    return token;
+  });
+
+  const hasPersonTerm = tokens.some((token) => personMap.has(token));
+  const jerseyIndex = rewritten.indexOf("jersey");
+  if (hasPersonTerm && jerseyIndex >= 0) {
+    rewritten.splice(jerseyIndex, 1, "new", "jersey");
+    changed = true;
+  }
+
+  return changed ? rewritten.join(" ") : null;
+}
+
 function relationalAnchorVariant(descriptivePhrases, anchors) {
   const phrase = (descriptivePhrases || [])[0];
   if (!phrase) return null;
@@ -362,6 +396,7 @@ export function analyzeQuery(query) {
   const queryPhrases = queryPhraseCandidates(q);
   const entityPhrases = entityPhraseCandidates(q, queryPhrases);
   const descriptivePhrases = queryPhrases.filter((phrase) => phraseHasConnector(phrase));
+  const semanticVariant = colloquialSemanticVariant(q, descriptivePhrases);
   const lower = q.toLowerCase();
   if (/web\s+crawler/.test(lower)) phrases.push("web crawler");
   if (/web\s+search\s+api/.test(lower)) phrases.push("web search api");
@@ -486,6 +521,10 @@ export function analyzeQuery(query) {
         variants.push(relational);
       }
 
+      if (semanticVariant && semanticVariant.toLowerCase() !== q.toLowerCase()) {
+        variants.push(semanticVariant);
+      }
+
       const relaxed = anchors.slice(0, 6).join(" ");
       if (relaxed && relaxed.toLowerCase() !== q.toLowerCase()) variants.push(relaxed);
     }
@@ -505,6 +544,7 @@ export function analyzeQuery(query) {
     entityPhrases,
     descriptivePhrases,
     relationalVariant: relationalAnchorVariant(descriptivePhrases, anchors),
+    semanticVariant,
     brand,
     comparisonTarget,
     comparisonMode,
