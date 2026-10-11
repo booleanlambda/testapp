@@ -518,6 +518,102 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+async function runMediaProbe() {
+  const tests = [
+    {
+      name: "image_search_live_probe",
+      run: () => searchImages("Accra Ghana skyline", {
+        limit: 5,
+        safeSearch: "moderate",
+        aspect: "any",
+        cacheTtl: 30
+      }),
+      validate(result) {
+        const rows = Array.isArray(result?.results) ? result.results : [];
+        return {
+          passed: rows.length > 0 &&
+            rows.some((row) => row?.image_url && row?.source_url) &&
+            rows.every((row) => row?.license != null && row?.copyright_status != null),
+          payload: {
+            provider: result?.provider || null,
+            providers: result?.providers || [],
+            resultCount: rows.length,
+            attempts: result?.attempts || [],
+            cached: result?.cached === true,
+            rightsShape: rows.slice(0, 3).map((row) => ({
+              title: row?.title || null,
+              source_url: row?.source_url || null,
+              provider: row?.provider || null,
+              license: row?.license ?? null,
+              copyright_status: row?.copyright_status ?? null,
+              attribution_required: row?.attribution_required ?? null,
+              rights_verified: row?.rights?.rights_verified === true
+            }))
+          }
+        };
+      }
+    },
+    {
+      name: "video_search_live_probe",
+      run: () => searchVideos("Ghana football", {
+        limit: 5,
+        safeSearch: "moderate",
+        cacheTtl: 30
+      }),
+      validate(result) {
+        const rows = Array.isArray(result?.results) ? result.results : [];
+        return {
+          passed: rows.length > 0 &&
+            rows.some((row) => row?.video_url && row?.source_url) &&
+            rows.every((row) => row?.license != null && row?.copyright_status != null),
+          payload: {
+            provider: result?.provider || null,
+            providers: result?.providers || [],
+            resultCount: rows.length,
+            attempts: result?.attempts || [],
+            cached: result?.cached === true,
+            rightsShape: rows.slice(0, 3).map((row) => ({
+              title: row?.title || null,
+              source_url: row?.source_url || null,
+              creator: row?.creator || null,
+              provider: row?.provider || null,
+              license: row?.license ?? null,
+              copyright_status: row?.copyright_status ?? null,
+              attribution_required: row?.attribution_required ?? null,
+              rights_verified: row?.rights?.rights_verified === true
+            }))
+          }
+        };
+      }
+    }
+  ];
+
+  await Promise.all(tests.map(async (test) => {
+    const startedAt = Date.now();
+    try {
+      const result = await withTimeout(test.run(), 20000);
+      const validation = test.validate(result);
+      const payload = {
+        name: test.name,
+        passed: validation.passed,
+        durationMs: Date.now() - startedAt,
+        ...validation.payload
+      };
+      console[validation.passed ? "log" : "error"](
+        validation.passed ? "MEDIA_PROBE_PASS" : "MEDIA_PROBE_FAIL",
+        JSON.stringify(payload)
+      );
+    } catch (error) {
+      console.error("MEDIA_PROBE_FAIL", JSON.stringify({
+        name: test.name,
+        passed: false,
+        durationMs: Date.now() - startedAt,
+        error: error?.message || String(error)
+      }));
+    }
+  }));
+}
+
 async function runStructuredLatencyProbe() {
   const startedAt = Date.now();
   const body = {
@@ -611,15 +707,21 @@ server.listen(port, "0.0.0.0", async () => {
   console.log("startup diagnostics", JSON.stringify(diagnostics));
 
   const runLatencyProbe = process.env.RUN_STARTUP_LATENCY_PROBE === "1";
+  const runMediaProbeEnabled = process.env.RUN_STARTUP_MEDIA_PROBE === "1";
   const runFullRegressions = process.env.RUN_STARTUP_REGRESSIONS === "1";
 
   if (runLatencyProbe) {
     void runStructuredLatencyProbe();
   }
 
+  if (runMediaProbeEnabled) {
+    void runMediaProbe();
+  }
+
   if (!runFullRegressions) {
     console.log("startup regressions disabled", JSON.stringify({
       latencyProbe: runLatencyProbe,
+      mediaProbe: runMediaProbeEnabled,
       fullRegressions: false
     }));
     return;
