@@ -3,7 +3,7 @@ export function openApiSpec({ serverUrl = "https://web-search-api-m30a.onrender.
     openapi: "3.1.0",
     info: {
       title: "Crawler Agent Search API",
-      version: "0.7.0",
+      version: "0.8.0",
       description: "Agent-first web retrieval. The calling agent supplies intent and evidence requirements; Crawler performs deterministic discovery, fetching, ranking, and evidence validation."
     },
     servers: [{ url: serverUrl.replace(/\/$/, "") }],
@@ -45,6 +45,18 @@ export function openApiSpec({ serverUrl = "https://web-search-api-m30a.onrender.
             aspect: { enum: ["any","square","wide","tall"], default: "any" },
             min_width: { type: "integer", minimum: 0, maximum: 10000, default: 0 },
             min_height: { type: "integer", minimum: 0, maximum: 10000, default: 0 },
+            preferred_domains: { type: "array", items: { type: "string" }, maxItems: 12 },
+            excluded_domains: { type: "array", items: { type: "string" }, maxItems: 12 },
+            cache_ttl: { type: "integer", minimum: 30, maximum: 21600, default: 1800 }
+          }
+        },
+        VideoSearchRequest: {
+          type: "object",
+          required: ["query"],
+          properties: {
+            query: { type: "string", minLength: 1 },
+            max_results: { type: "integer", minimum: 1, maximum: 30, default: 12 },
+            safe_search: { enum: ["strict","moderate","off"], default: "moderate" },
             preferred_domains: { type: "array", items: { type: "string" }, maxItems: 12 },
             excluded_domains: { type: "array", items: { type: "string" }, maxItems: 12 },
             cache_ttl: { type: "integer", minimum: 30, maximum: 21600, default: 1800 }
@@ -115,6 +127,35 @@ export function openApiSpec({ serverUrl = "https://web-search-api-m30a.onrender.
           },
           responses: {
             "200": { description: "Ranked image URLs with source provenance and rights status" },
+            "400": { description: "Invalid request" },
+            "401": { description: "Missing or invalid API key" }
+          }
+        }
+      },
+      "/videos": {
+        get: {
+          summary: "Free video discovery",
+          security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }],
+          parameters: [
+            { name: "q", in: "query", required: true, schema: { type: "string" } },
+            { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 30 } },
+            { name: "safe_search", in: "query", schema: { enum: ["strict","moderate","off"] } }
+          ],
+          responses: {
+            "200": { description: "Ranked video URLs with creator, provenance, and rights metadata" },
+            "400": { description: "Invalid request" },
+            "401": { description: "Missing or invalid API key" }
+          }
+        },
+        post: {
+          summary: "Structured free video discovery",
+          security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/VideoSearchRequest" } } }
+          },
+          responses: {
+            "200": { description: "Ranked video URLs with creator, provenance, and rights metadata" },
             "400": { description: "Invalid request" },
             "401": { description: "Missing or invalid API key" }
           }
