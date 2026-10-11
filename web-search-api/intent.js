@@ -37,19 +37,134 @@ function uniq(xs) {
   return [...new Set(xs)];
 }
 
-function queryPhraseCandidates(query) {
-  const tokens = words(query);
-  const phrases = [];
+const PHRASE_CONNECTORS = new Set([
+  "with","without","of","for","in","on","at","by","from","to","near","around",
+  "inside","outside","under","over","between","among","through","across"
+]);
 
+const PHRASE_DETERMINERS = new Set(["a","an","the","this","that","these","those"]);
+
+function normalizePhraseText(value) {
+  return words(value).join(" ").trim();
+}
+
+function likelyClauseVerb(token, nextToken = "") {
+  const t = String(token || "").toLowerCase();
+  const next = String(nextToken || "").toLowerCase();
+
+  if ([
+    "is","are","was","were","be","been","being","has","have","had",
+    "do","does","did","can","could","will","would","may","might","must",
+    "turn","turns","turned","take","takes","took","make","makes","made",
+    "say","says","said","go","goes","went","find","finds","found",
+    "see","sees","saw","get","gets","got","give","gives","gave",
+    "show","shows","showed","cause","causes","caused","become","becomes","became"
+  ].includes(t)) return true;
+
+  // A third-person-looking action immediately followed by a determiner
+  // is a strong clause boundary: "beard turns the guy", "shirt covers a box".
+  return t.length > 4 && t.endsWith("s") && PHRASE_DETERMINERS.has(next);
+}
+
+function queryPhraseCandidates(query) {
+  const scored = new Map();
+
+  const add = (value, score) => {
+    const phrase = normalizePhraseText(value);
+    if (!phrase || phrase.split(/\s+/).length < 2) return;
+    const current = scored.get(phrase);
+    if (current == null || score > current) scored.set(phrase, score);
+  };
+
+  // Preserve explicit user quoting above all inferred phrase structure.
+  for (const match of String(query).matchAll(/["“”]([^"“”]{3,120})["“”]/g)) {
+    add(match[1], 100);
+  }
+
+  // Capitalized multiword names/entities are strong phrase signals.
+  for (const clause of String(query).split(/[.!?;:,]+/)) {
+    const raw = rawWords(clause);
+    let run = [];
+
+    const flush = () => {
+      if (run.length >= 2) {
+        add(run.slice(0, 5).join(" "), 80 + Math.min(run.length, 5));
+      }
+      run = [];
+    };
+
+    for (const token of raw) {
+      const lower = token.toLowerCase();
+      const titleLike =
+        /^[A-Z][A-Za-z0-9._-]*$/.test(token) &&
+        !PHRASE_DETERMINERS.has(lower) &&
+        !STOP.has(lower);
+
+      if (titleLike) run.push(token);
+      else flush();
+    }
+    flush();
+  }
+
+  // Keep grammatical connectors inside a bounded phrase instead of throwing
+  // them away. Example: "the guy with a beard turns the guy" ->
+  // "guy with a beard", not merely "beard turns".
+  for (const clause of String(query).split(/[.!?;:,]+/)) {
+    const tokens = words(clause);
+
+    for (let i = 1; i < tokens.length - 1; i += 1) {
+      if (!PHRASE_CONNECTORS.has(tokens[i])) continue;
+
+      const left = tokens[i - 1];
+      if (!left || STOP.has(left)) continue;
+
+      let right = i + 1;
+      while (right < tokens.length && PHRASE_DETERMINERS.has(tokens[right])) {
+        right += 1;
+      }
+      if (right >= tokens.length || STOP.has(tokens[right])) continue;
+
+      const baseStart =
+        i >= 2 && !STOP.has(tokens[i - 2]) && tokens[i - 2].length >= 3
+          ? i - 2
+          : i - 1;
+
+      // Minimal attachment reaches the first content word after the connector.
+      add(tokens.slice(i - 1, right + 1).join(" "), 65);
+      if (baseStart < i - 1) {
+        add(tokens.slice(baseStart, right + 1).join(" "), 67);
+      }
+
+      // One-word right expansion captures adjective+noun objects such as
+      // "guy with a long beard", but stops before a likely new clause.
+      const expanded = right + 1;
+      if (
+        expanded < tokens.length &&
+        !STOP.has(tokens[expanded]) &&
+        !likelyClauseVerb(tokens[expanded], tokens[expanded + 1])
+      ) {
+        add(tokens.slice(i - 1, expanded + 1).join(" "), 70);
+        if (baseStart < i - 1) {
+          add(tokens.slice(baseStart, expanded + 1).join(" "), 72);
+        }
+      }
+    }
+  }
+
+  // Retain the original conservative adjacent-content fallback.
+  const tokens = words(query);
   for (let i = 0; i < tokens.length - 1; i += 1) {
     const a = tokens[i];
     const b = tokens[i + 1];
     if (STOP.has(a) || STOP.has(b)) continue;
     if (a.length < 4 || b.length < 4) continue;
-    phrases.push(`${a} ${b}`);
+    add(`${a} ${b}`, 30);
   }
 
-  return uniq(phrases).slice(0, 4);
+  return [...scored.entries()]
+    .sort((a, b) => b[1] - a[1] || b[0].split(/\s+/).length - a[0].split(/\s+/).length)
+    .map(([phrase]) => phrase)
+    .slice(0, 6);
 }
 
 function quotedCoreVariant(query, phrases, anchors) {
