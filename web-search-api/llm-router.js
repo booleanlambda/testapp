@@ -381,8 +381,8 @@ export async function enrichQueryAnalysis(query, fallback) {
   ]).slice(0, 10);
 
   const variants = uniq([
-    ...plan.queries,
-    ...(fallback.variants || [])
+    ...(fallback.variants || []),
+    ...plan.queries
   ]).slice(0, 3);
 
   const strictPrecision =
