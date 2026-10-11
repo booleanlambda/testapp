@@ -1,36 +1,55 @@
-# Crawler — Agent Search API
+# Crawler — Agent Retrieval API
 
-Crawler is a low-latency web retrieval service designed for autonomous agents.
+Crawler is a low-latency retrieval service for autonomous agents.
 
-Instead of asking the search service to re-interpret an already-understood task, the calling agent sends a structured search contract. Crawler then performs deterministic discovery, direct retrieval, ranking, and evidence validation.
+It gives an agent one retrieval surface for:
 
-## Core idea
+- web search + page evidence
+- image discovery
+- video discovery
+- provenance
+- copyright / license / attribution metadata when available
+
+The calling agent keeps interpretation authority. Crawler retrieves and validates evidence; it does not decide the agent's final opinion, post, answer, or action.
+
+Current API version: **0.8.0**
+
+## Retrieval model
 
 ```
 agent reasoning
-  -> agent-search-v1 request
-  -> cache/corpus/discovery
-  -> direct page fetch
-  -> evidence validation
-  -> ranked passages
+  -> structured retrieval request
+  -> cache / indexed corpus
+  -> free discovery providers on miss
+  -> direct source retrieval when needed
+  -> ranking + evidence/provenance
+  -> agent
 ```
 
-For structured requests, Crawler does not need an LLM planner in the response path. Embedding/index enrichment is also kept off the response-critical path.
+For structured web requests, the agent can send semantics it already knows instead of paying for another LLM planner in the search path.
 
-## Live service
+Media retrieval is also deterministic: Crawler discovers existing images/videos and returns the source and rights metadata it can observe. It does not generate media.
 
-- Health: `GET /health`
-- Agent schema: `GET /agent-search-schema`
-- OpenAPI: `GET /openapi.json`
-- Search: `POST /search`
-- Images: `GET /images?q=...` or `POST /images`
-- Videos: `GET /videos?q=...` or `POST /videos`
+## Endpoints
 
-The current Render deployment is configured separately from this repository. Do not commit API keys or infrastructure secrets.
+| Purpose | Endpoint |
+|---|---|
+| Health | `GET /health` |
+| Diagnostics | `GET /diagnostics` |
+| Structured web search | `POST /search` |
+| Discovery-only web search | `GET /discover?q=...` |
+| Image search | `GET /images?q=...` or `POST /images` |
+| Video search | `GET /videos?q=...` or `POST /videos` |
+| Crawl | `POST /crawl` |
+| Crawl status | `GET /crawl/:jobId` |
+| Agent schema | `GET /agent-search-schema` |
+| OpenAPI | `GET /openapi.json` |
+
+Current service limits include 20 web-search results, 30 image results, 30 video results, crawl depth up to 2, and up to 10 pages per crawl request.
 
 ## Authentication
 
-When `SEARCH_API_KEY` or `SEARCH_API_KEYS` is configured, all non-public endpoints require either:
+When `SEARCH_API_KEY` or `SEARCH_API_KEYS` is configured, protected endpoints accept either:
 
 ```
 x-api-key: <key>
@@ -42,16 +61,219 @@ or:
 Authorization: Bearer <key>
 ```
 
-Public endpoints remain available without authentication:
+Public endpoints:
 
 - `/`
 - `/health`
 - `/agent-search-schema`
 - `/openapi.json`
 
-If no API key is configured, protected endpoints remain open for local development.
+Do not commit API keys or infrastructure secrets.
 
-## Structured agent request
+## SDK
+
+A dependency-free Node SDK is included at:
+
+```
+sdk/agent-search.mjs
+```
+
+It supports both the convenience client and the original direct functions.
+
+### Recommended client
+
+```js
+import { createCrawlerClient } from "./sdk/agent-search.mjs";
+
+const crawler = createCrawlerClient({
+  baseUrl: process.env.CRAWLER_URL,
+  apiKey: process.env.CRAWLER_API_KEY,
+});
+```
+
+### Web search
+
+```js
+const result = await crawler.search({
+  query: "What happens when one asyncio TaskGroup task fails?",
+  intent: "technical",
+  goal: "explain",
+  entities: ["Python", "asyncio"],
+  concepts: ["TaskGroup", "task cancellation", "ExceptionGroup"],
+  source_policy: "primary",
+  preferred_domains: ["docs.python.org"],
+  required_evidence: ["TaskGroup", "cancel", "ExceptionGroup"],
+  depth: "deep",
+  max_results: 6,
+  crawl_budget: 4,
+});
+```
+
+Crawler automatically sends:
+
+```
+protocol = agent-search-v1
+output   = passages
+```
+
+For structured requests, planner metadata should show `provider=agent-structured` and no planner model.
+
+A web response can include:
+
+- ranked `results`
+- source URLs
+- `discovery` provenance and provider diagnostics
+- `evidence.required`
+- `evidence.matched`
+- `evidence.missing`
+- `evidence.complete`
+- `fastPath` information
+- crawl activity
+
+An agent can use `evidence.complete` as a deterministic stop/continue signal.
+
+## Image search
+
+```js
+const images = await crawler.images("Accra skyline at night", {
+  max_results: 12,
+  safe_search: "moderate",
+  aspect: "wide",
+  min_width: 900,
+  min_height: 500,
+});
+```
+
+The free image path currently uses:
+
+```
+SearxNG images, when configured
+        |
+        v
+Bing Images HTML fallback
+```
+
+Typical image result fields:
+
+```json
+{
+  "title": "Example image",
+  "image_url": "https://...",
+  "thumbnail_url": "https://...",
+  "source_url": "https://...",
+  "width": 1600,
+  "height": 900,
+  "provider": "bing-images-html",
+  "license": "unknown",
+  "license_url": null,
+  "copyright_status": "unknown",
+  "copyright_notice": null,
+  "creator": null,
+  "creator_url": null,
+  "attribution_required": null,
+  "attribution_text": null,
+  "rights": {
+    "rights_verified": false
+  }
+}
+```
+
+## Video search
+
+```js
+const videos = await crawler.videos("Ghana football training", {
+  max_results: 12,
+  safe_search: "moderate",
+});
+```
+
+The free video path currently uses:
+
+```
+SearxNG videos, when configured
+        |
+        v
+direct YouTube discovery fallback
+```
+
+Typical video result fields include:
+
+- `video_url`
+- `source_url`
+- `thumbnail_url`
+- creator/channel
+- `creator_url`
+- `duration_seconds`
+- publication text
+- view-count text
+- provider provenance
+- the same normalized rights metadata used for images
+
+Crawler returns links to videos. It does not download or rehost video assets.
+
+## Media rights and attribution
+
+Crawler is **attribution-ready, not rights-cleared**.
+
+For images and videos it normalizes whatever rights metadata the upstream source explicitly provides into:
+
+- `license`
+- `license_url`
+- `copyright_status`
+- `copyright_notice`
+- `creator`
+- `creator_url`
+- `attribution_required`
+- `attribution_text`
+- `rights.rights_verified`
+- `rights.verification_note`
+
+Use the SDK helper:
+
+```js
+const rights = crawler.rights(images.results[0]);
+
+console.log(rights.license);
+console.log(rights.attribution_required);
+console.log(rights.rights_verified);
+```
+
+Rules:
+
+1. Crawler never treats search discovery as permission to reuse an asset.
+2. Missing rights metadata stays `unknown` / `null`.
+3. Explicit upstream CC0/public-domain or Creative Commons claims may be preserved.
+4. `rights_verified=false` means the original `source_url` should still be checked before redistribution or publication.
+5. Crawler should not invent an attribution string, creator, copyright owner, or license.
+
+This distinction is intentional. An agent can know what metadata was discovered without confusing that metadata with a legal conclusion.
+
+## Direct SDK functions
+
+Existing callers can keep using the standalone functions:
+
+```js
+import {
+  agentSearch,
+  imageSearch,
+  videoSearch,
+  mediaRights,
+} from "./sdk/agent-search.mjs";
+```
+
+They remain compatible with the earlier SDK calling style.
+
+The SDK also exports:
+
+- `AGENT_SEARCH_PROTOCOL`
+- `CRAWLER_API_VERSION`
+- `CrawlerApiError`
+
+`CrawlerApiError` exposes `status`, `body`, and `endpoint` when the server returns an error.
+
+## Agent search contract
+
+Example raw request:
 
 ```json
 {
@@ -71,74 +293,47 @@ If no API key is configured, protected endpoints remain open for local developme
 }
 ```
 
-The important field is `required_evidence`. Crawler checks the fetched material and reports which evidence terms were matched or remain missing.
+Only `protocol` and `query` are mandatory at the HTTP layer. Agent callers should still send semantics they already know because that reduces redundant planning work and improves retrieval precision.
 
-## Response behavior
+## Free vs hardened provider layer
 
-A structured response includes:
+The public contract is deliberately provider-independent.
 
-- ranked `results`
-- `discovery` diagnostics and source provenance
-- `evidence.required`, `matched`, `missing`, and `complete`
-- `fastPath` metadata
-- `crawl` activity
-- planner metadata showing whether the caller supplied the semantics
+Free tier:
 
-For `agent-search-v1`, the planner provider is `agent-structured` and the planner model is `null`.
+```
+cache / indexed corpus
+  -> free web discovery
+  -> free image discovery
+  -> free video discovery
+  -> best-effort provider reliability
+```
+
+A hardened paid tier can later replace or augment those providers with commercial search/media backends, retries, higher concurrency, stronger freshness, and tighter SLAs **without changing the SDK methods or endpoint shapes**.
+
+That means agents can keep calling:
+
+```js
+crawler.search(...)
+crawler.images(...)
+crawler.videos(...)
+```
+
+while Crawler changes the provider strategy behind the API.
 
 ## Latency architecture
 
-The structured path is optimized for:
+The structured web path is optimized for:
 
-1. cached query/evidence lookup,
-2. known-domain corpus/sitemap,
-3. focused external discovery on cold miss,
-4. parallel direct fetch,
-5. direct evidence matching,
-6. immediate response,
-7. asynchronous indexing/enrichment afterward.
+1. cached query/evidence lookup
+2. known-domain corpus/sitemap
+3. focused external discovery on a cold miss
+4. parallel direct retrieval
+5. deterministic evidence matching
+6. immediate response
+7. asynchronous indexing/enrichment afterward
 
-Recent internal benchmarks reached sub-second warm retrieval and approximately 2.5 seconds for an isolated cold structured search.
-
-
-## Image search
-
-Crawler v0.7 adds first-class image discovery without putting an image generator in the retrieval path.
-
-```
-GET /images?q=Accra+skyline&limit=12
-```
-
-or:
-
-```json
-{
-  "query": "Accra skyline at night",
-  "max_results": 12,
-  "safe_search": "moderate",
-  "aspect": "wide",
-  "min_width": 900,
-  "min_height": 500,
-  "preferred_domains": [],
-  "excluded_domains": []
-}
-```
-
-The free path uses SearxNG image results when configured and Bing Images HTML as the fallback. Responses return the direct image URL, thumbnail URL, source page, dimensions when available, provider provenance, and a rights status.
-
-Crawler does **not** infer permission to reuse an image. Media results expose a normalized `rights` object with `license`, `license_url`, `copyright_status`, `copyright_notice`, creator fields, attribution fields, and `rights_verified`. Explicit upstream Creative Commons/public-domain claims can populate those fields, but `rights_verified=false` means the source page still needs verification before reuse or redistribution. A hardened paid provider can later be added behind the same contract without changing clients.
-
-## Video search
-
-Crawler v0.8 adds first-class video discovery:
-
-```
-GET /videos?q=Ghana+football&limit=12
-```
-
-The free path uses SearxNG video results when configured and direct YouTube discovery as a fallback. Results return the canonical video page, thumbnail, creator/channel, duration when available, publication/view text, provider provenance, and the same normalized rights metadata used for images.
-
-Crawler links to videos; it does not download or rehost them.
+Recent internal probes have demonstrated sub-second warm retrieval and roughly 2.5 seconds for an isolated structured cold-search case. Treat these as internal observations, not an SLA.
 
 ## Local run
 
@@ -148,14 +343,6 @@ npm install
 npm start
 ```
 
-Required production services are configured by environment variables for MongoDB, AMQP, and the dynamic embedding provider.
+Production integrations are configured through environment variables for MongoDB, AMQP, embedding infrastructure, discovery providers, and API authentication.
 
-## SDK
-
-A dependency-free Node client is provided at:
-
-```
-sdk/agent-search.mjs
-```
-
-See [API.md](./API.md) for the request contract and integration guidance.
+For the complete request contract, see [API.md](./API.md). For machine-readable integration, use `GET /openapi.json`.
