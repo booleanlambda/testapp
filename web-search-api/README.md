@@ -139,6 +139,7 @@ const images = await crawler.images("Accra skyline at night", {
   max_results: 12,
   safe_search: "moderate",
   aspect: "wide",
+  rights: "known",
   min_width: 900,
   min_height: 500,
 });
@@ -147,11 +148,19 @@ const images = await crawler.images("Accra skyline at night", {
 The free image path currently uses:
 
 ```
+Wikimedia Commons
+        |
+        v
 SearxNG images, when configured
         |
         v
-Bing Images HTML fallback
+DuckDuckGo Images
+        |
+        v
+Bing Images fallback
 ```
+
+Wikimedia Commons is preferred because it exposes structured creator, license, attribution, copyright, permission, and restriction metadata alongside the media itself.
 
 Typical image result fields:
 
@@ -237,6 +246,15 @@ console.log(rights.license);
 console.log(rights.attribution_required);
 console.log(rights.rights_verified);
 ```
+
+Image requests can additionally set `rights` to:
+
+- `any` — do not filter by rights metadata.
+- `known` — require a source-supplied license/copyright signal.
+- `no_attribution` — require known rights metadata explicitly indicating attribution is not required.
+- `public_domain` — require a source claim such as public domain, CC0, or PDM.
+
+These filters operate on source metadata; they do not convert `rights_verified=false` into legal verification.
 
 Rules:
 
