@@ -2288,6 +2288,55 @@ async function runVariant(query, analysis, limit) {
   return { rows, attempts };
 }
 
+export async function diagnoseDiscoveryProviders(query, limit = 8) {
+  const providers = [
+    ["bing-web-rss", discoverBingWebRss],
+    ["bing-html", discoverBingHtml],
+    ["duckduckgo", discoverDuckDuckGo],
+    ["mojeek-html", discoverMojeekHtml],
+    ["yahoo-html", discoverYahooHtml],
+    ["wikipedia-fulltext", discoverWikipediaFullText]
+  ];
+
+  if (process.env.SEARCH_DISCOVERY_BASE_URL) {
+    providers.push(["searxng", (q, n) => discoverSearx(q, n, "general")]);
+  }
+
+  const settled = await Promise.all(
+    providers.map(async ([provider, fn]) => {
+      const startedAt = Date.now();
+      try {
+        const rows = await fn(query, limit);
+        return {
+          provider,
+          ok: true,
+          durationMs: Date.now() - startedAt,
+          count: rows.length,
+          first: rows.slice(0, 3).map((row) => ({
+            title: row.title,
+            url: row.url
+          }))
+        };
+      } catch (error) {
+        return {
+          provider,
+          ok: false,
+          durationMs: Date.now() - startedAt,
+          count: 0,
+          error: String(error?.message || error).slice(0, 300),
+          status: error?.status || null
+        };
+      }
+    })
+  );
+
+  return {
+    query,
+    searxConfigured: Boolean(process.env.SEARCH_DISCOVERY_BASE_URL),
+    providers: settled
+  };
+}
+
 export async function discoverWeb(query, options = {}) {
   const q = String(query || "").trim();
   if (!q) throw new Error("query_required");
