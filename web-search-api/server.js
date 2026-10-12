@@ -712,6 +712,18 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+async function runParallelEnvNameProbe() {
+  const names = Object.keys(process.env)
+    .filter((key) => /parallel|aau.*saau|saau.*aau/i.test(key))
+    .sort()
+    .slice(0, 25);
+
+  console.log("PARALLEL_ENV_NAME_PROBE", JSON.stringify({
+    matchingNames: names,
+    count: names.length
+  }));
+}
+
 async function runProviderHealthProbe() {
   for (const query of [
     "Jersey Devil legends",
@@ -1169,6 +1181,7 @@ server.listen(port, "0.0.0.0", async () => {
   const runHumanSurfaceProbeEnabled = process.env.RUN_STARTUP_HUMAN_SURFACE_PROBE === "1";
   const runFolkloreRelevanceProbeEnabled = process.env.RUN_STARTUP_FOLKLORE_RELEVANCE_PROBE === "1";
   const runProviderHealthProbeEnabled = process.env.RUN_STARTUP_PROVIDER_HEALTH_PROBE === "1";
+  const runParallelEnvNameProbeEnabled = process.env.RUN_STARTUP_PARALLEL_ENV_NAME_PROBE === "1";
   const runFullRegressions = process.env.RUN_STARTUP_REGRESSIONS === "1";
 
   if (runLatencyProbe) {
@@ -1191,6 +1204,10 @@ server.listen(port, "0.0.0.0", async () => {
     void runProviderHealthProbe();
   }
 
+  if (runParallelEnvNameProbeEnabled) {
+    void runParallelEnvNameProbe();
+  }
+
   if (!runFullRegressions) {
     console.log("startup regressions disabled", JSON.stringify({
       latencyProbe: runLatencyProbe,
@@ -1198,6 +1215,7 @@ server.listen(port, "0.0.0.0", async () => {
       humanSurfaceProbe: runHumanSurfaceProbeEnabled,
       folkloreRelevanceProbe: runFolkloreRelevanceProbeEnabled,
       providerHealthProbe: runProviderHealthProbeEnabled,
+      parallelEnvNameProbe: runParallelEnvNameProbeEnabled,
       fullRegressions: false
     }));
     return;
