@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 62;
+const DISCOVERY_CACHE_VERSION = 63;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -217,11 +217,42 @@ function descriptivePersonRoleRequired(analysis) {
   return [...queryTerms].some((term) => PERSON_QUERY_TERMS.has(term));
 }
 
-function rowHasPersonRole(row) {
+function requestedPersonRoleTerms(analysis) {
+  const anchors = new Set(
+    (analysis?.anchors || []).map((value) => String(value || "").toLowerCase())
+  );
+
+  if (anchors.has("guy") || anchors.has("guys") || anchors.has("man") || anchors.has("men")) {
+    return ["guy","guys","man","men","male"];
+  }
+
+  if (anchors.has("woman") || anchors.has("women") || anchors.has("gal") || anchors.has("gals")) {
+    return ["woman","women","gal","gals","lady","ladies","female"];
+  }
+
+  if (anchors.has("boy") || anchors.has("boys")) {
+    return ["boy","boys","male"];
+  }
+
+  if (anchors.has("girl") || anchors.has("girls")) {
+    return ["girl","girls","female"];
+  }
+
+  if (
+    anchors.has("kid") || anchors.has("kids") ||
+    anchors.has("child") || anchors.has("children")
+  ) {
+    return ["kid","kids","child","children","boy","boys","girl","girls"];
+  }
+
+  return [...PERSON_QUERY_TERMS];
+}
+
+function rowHasPersonRole(row, analysis) {
   const hay = normalizedWordString(
     (row?.title || "") + " " + (row?.snippet || "") + " " + (row?.url || "")
   );
-  return [...PERSON_QUERY_TERMS].some((term) =>
+  return requestedPersonRoleTerms(analysis).some((term) =>
     hay.includes(" " + term + " ")
   );
 }
@@ -237,7 +268,7 @@ function passesGeneralCoverage(row, analysis) {
     (analysis?.descriptivePhrases || []).length &&
     descriptivePersonRoleRequired(analysis)
   ) {
-    if (!rowHasPersonRole(row)) return false;
+    if (!rowHasPersonRole(row, analysis)) return false;
 
     const hay = normalizedWordString(
       (row?.title || "") + " " + (row?.snippet || "") + " " + (row?.url || "")
