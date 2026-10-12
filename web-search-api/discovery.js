@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 63;
+const DISCOVERY_CACHE_VERSION = 64;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -257,6 +257,85 @@ function rowHasPersonRole(row, analysis) {
   );
 }
 
+function descriptiveConceptClustered(row, analysis, maxSpan = 80) {
+  const tokens = normalizedWordString(
+    (row?.title || "") + " " + (row?.snippet || "") + " " + (row?.url || "")
+  )
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (!tokens.length) return false;
+
+  const roleTerms = new Set(requestedPersonRoleTerms(analysis));
+  const anchors = (analysis?.anchors || [])
+    .map((value) => String(value || "").toLowerCase())
+    .filter(Boolean);
+  const nonPersonAnchors = anchors.filter(
+    (anchor) => !PERSON_QUERY_TERMS.has(anchor)
+  );
+
+  if (!nonPersonAnchors.length) return rowHasPersonRole(row, analysis);
+
+  const rolePositions = [];
+  const anchorPositions = new Map(
+    nonPersonAnchors.map((anchor) => [anchor, []])
+  );
+
+  tokens.forEach((token, index) => {
+    if (roleTerms.has(token)) rolePositions.push(index);
+
+    for (const anchor of nonPersonAnchors) {
+      if (normalizedQueryForms(anchor).includes(token)) {
+        anchorPositions.get(anchor).push(index);
+      }
+    }
+  });
+
+  if (!rolePositions.length) return false;
+  if ([...anchorPositions.values()].some((positions) => !positions.length)) {
+    return false;
+  }
+
+  const groups = [
+    rolePositions,
+    ...nonPersonAnchors.map((anchor) => anchorPositions.get(anchor))
+  ];
+
+  for (const rolePos of rolePositions) {
+    const chosen = [rolePos];
+    let possible = true;
+
+    for (let i = 1; i < groups.length; i += 1) {
+      const positions = groups[i];
+      let nearest = positions[0];
+      let nearestDistance = Math.abs(nearest - rolePos);
+
+      for (const pos of positions) {
+        const distance = Math.abs(pos - rolePos);
+        if (distance < nearestDistance) {
+          nearest = pos;
+          nearestDistance = distance;
+        }
+      }
+
+      chosen.push(nearest);
+      if (nearestDistance > maxSpan) {
+        possible = false;
+        break;
+      }
+    }
+
+    if (!possible) continue;
+
+    const min = Math.min(...chosen);
+    const max = Math.max(...chosen);
+    if (max - min <= maxSpan) return true;
+  }
+
+  return false;
+}
+
 function passesGeneralCoverage(row, analysis) {
   if (analysis?.strictPrecision) return true;
   if (analysis?.intent?.startsWith("technical")) return true;
@@ -266,26 +345,10 @@ function passesGeneralCoverage(row, analysis) {
 
   if (
     (analysis?.descriptivePhrases || []).length &&
-    descriptivePersonRoleRequired(analysis)
+    descriptivePersonRoleRequired(analysis) &&
+    !descriptiveConceptClustered(row, analysis)
   ) {
-    if (!rowHasPersonRole(row, analysis)) return false;
-
-    const hay = normalizedWordString(
-      (row?.title || "") + " " + (row?.snippet || "") + " " + (row?.url || "")
-    );
-    const nonPersonAnchors = anchors.filter(
-      (anchor) => !PERSON_QUERY_TERMS.has(String(anchor || "").toLowerCase())
-    );
-    const nonPersonHits = nonPersonAnchors.filter((anchor) =>
-      hayHasQueryForm(hay, anchor)
-    ).length;
-
-    if (
-      nonPersonAnchors.length &&
-      nonPersonHits < Math.min(2, nonPersonAnchors.length)
-    ) {
-      return false;
-    }
+    return false;
   }
 
   const { anchorHits, phraseHits } = rowCoverage(row, analysis);
