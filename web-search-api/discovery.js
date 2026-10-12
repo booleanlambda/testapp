@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 60;
+const DISCOVERY_CACHE_VERSION = 61;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -229,6 +229,7 @@ function rowHasPersonRole(row) {
 function passesGeneralCoverage(row, analysis) {
   if (analysis?.strictPrecision) return true;
   if (analysis?.intent?.startsWith("technical")) return true;
+  if (row?.provider === "parallel-search") return true;
 
   const anchors = Array.isArray(analysis?.anchors) ? analysis.anchors : [];
   if (anchors.length < 2) return true;
@@ -269,9 +270,14 @@ function fuse(rows, analysis, limit) {
   for (const row of rows) {
     const key = canonicalResultKey(row.url);
     const current = byUrl.get(key);
+    const providerBoost =
+      row?.provider === "parallel-search"
+        ? Math.max(5, 13 - Number(row?.rank || 99) * 0.8)
+        : 0;
+
     const scored = {
       ...row,
-      relevance: relevanceScore(row, analysis)
+      relevance: relevanceScore(row, analysis) + providerBoost
     };
 
     if (!current || scored.relevance > current.relevance) {
@@ -347,6 +353,108 @@ function fuse(rows, analysis, limit) {
     }));
 
   return ranked;
+}
+
+function parallelApiKey() {
+  return (
+    String(process.env.PARALLEL_API_KEY || "").trim() ||
+    String(process.env["Aau-Saau"] || "").trim() ||
+    String(process.env.AAU_SAAU || "").trim()
+  );
+}
+
+function parallelConfigured() {
+  return Boolean(parallelApiKey());
+}
+
+async function discoverParallel(query, limit, analysis = {}) {
+  const apiKey = parallelApiKey();
+  if (!apiKey) return [];
+
+  const searchQueries = [
+    query,
+    analysis.semanticVariant,
+    analysis.relationalVariant,
+    analysis.descriptiveConjunctive
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .filter((value, index, all) =>
+      all.findIndex((other) => other.toLowerCase() === value.toLowerCase()) === index
+    )
+    .slice(0, 3);
+
+  const objective = String(
+    analysis.objective ||
+    `Find the most relevant web pages for this search: ${query}. Preserve named entities, descriptive relationships, location context, and the user's intended meaning. Prefer directly relevant sources over pages matching only one ambiguous word.`
+  ).slice(0, 1800);
+
+  const response = await fetch("https://api.parallel.ai/v1/search", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "user-agent": DISCOVERY_UA
+    },
+    body: JSON.stringify({
+      objective,
+      search_queries: searchQueries.length ? searchQueries : [query],
+      mode: String(process.env.PARALLEL_SEARCH_MODE || "fast").trim() || "fast",
+      advanced_settings: {
+        max_results: Math.min(Math.max(limit, 5), 20),
+        excerpt_settings: {
+          max_chars_per_result: 2400
+        }
+      }
+    }),
+    signal: AbortSignal.timeout(7000)
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    const error = new Error(`parallel_search_${response.status}`);
+    error.status = response.status;
+    error.detail = text.slice(0, 300);
+    throw error;
+  }
+
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error("parallel_search_invalid_json");
+  }
+
+  const items = Array.isArray(json?.results) ? json.results : [];
+  const rows = items.map((item, index) => {
+    const excerpts = Array.isArray(item?.excerpts)
+      ? item.excerpts.filter(Boolean).map(String)
+      : item?.excerpt
+        ? [String(item.excerpt)]
+        : [];
+
+    const snippet = excerpts.join(" ").replace(/\s+/g, " ").trim().slice(0, 5000);
+
+    return normalizeRow(
+      {
+        title: item?.title || item?.name || item?.url || null,
+        url: item?.url,
+        snippet: snippet || item?.description || null,
+        publishedAt:
+          item?.published_at ||
+          item?.publishedAt ||
+          item?.publication_date ||
+          item?.date ||
+          null,
+        provider: "parallel-search",
+        rank: index + 1
+      },
+      "parallel-search",
+      index + 1
+    );
+  }).filter(Boolean);
+
+  return rows.slice(0, limit);
 }
 
 async function discoverSearx(query, limit, category = "general") {
@@ -1844,6 +1952,48 @@ async function runVariant(query, analysis, limit) {
     analysis.planner?.provider === "agent-structured" &&
     analysis.sourcePolicy === "broad_web";
 
+  if (!structuredPrimary && parallelConfigured()) {
+    const parallelStartedAt = Date.now();
+    try {
+      const found = await boundedValue(
+        discoverParallel(query, Math.max(limit, 10), analysis),
+        7200,
+        []
+      );
+
+      attempts.push({
+        provider: "parallel-search",
+        query,
+        ok: found.length > 0,
+        resultCount: found.length,
+        durationMs: Date.now() - parallelStartedAt
+      });
+
+      if (found.length) {
+        rows.push(...found);
+        const focused = fuse(rows, analysis, limit);
+        const sufficient =
+          focused.length >= Math.min(3, limit) ||
+          (
+            focused.length > 0 &&
+            focused[0]?.provider === "parallel-search" &&
+            focused[0]?.relevance >= 7
+          );
+
+        if (sufficient) return { rows, attempts };
+      }
+    } catch (error) {
+      attempts.push({
+        provider: "parallel-search",
+        query,
+        ok: false,
+        error: error?.message || "parallel_search_failed",
+        status: error?.status || null,
+        durationMs: Date.now() - parallelStartedAt
+      });
+    }
+  }
+
   if (structuredBroad) {
     const startedAt = Date.now();
     const jobs = [
@@ -2290,6 +2440,9 @@ async function runVariant(query, analysis, limit) {
 
 export async function diagnoseDiscoveryProviders(query, limit = 8) {
   const providers = [
+    ...(parallelConfigured()
+      ? [["parallel-search", (q, n) => discoverParallel(q, n, analyzeQuery(q))]]
+      : []),
     ["bing-web-rss", discoverBingWebRss],
     ["bing-html", discoverBingHtml],
     ["duckduckgo", discoverDuckDuckGo],
@@ -2332,6 +2485,7 @@ export async function diagnoseDiscoveryProviders(query, limit = 8) {
 
   return {
     query,
+    parallelConfigured: parallelConfigured(),
     searxConfigured: Boolean(process.env.SEARCH_DISCOVERY_BASE_URL),
     providers: settled
   };
