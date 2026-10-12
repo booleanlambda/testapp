@@ -62,6 +62,11 @@ const envState = () => ({
   MONGODB_DB: Boolean(process.env.MONGODB_DB),
   EMBEDDING_API_KEY: Boolean(process.env.EMBEDDING_API_KEY),
   EMBEDDING_BASE_URL: Boolean(process.env.EMBEDDING_BASE_URL),
+  PARALLEL_SEARCH: Boolean(
+    process.env.PARALLEL_API_KEY ||
+    process.env["Aau-Saau"] ||
+    process.env.AAU_SAAU
+  ),
   AMQP_URL: Boolean(process.env.AMQP_URL)
 });
 
