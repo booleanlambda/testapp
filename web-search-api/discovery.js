@@ -4,7 +4,7 @@ import { analyzeQuery, relevanceScore, passesPrecision } from "./intent.js";
 import { enrichQueryAnalysis } from "./llm-router.js";
 
 const DISCOVERY_UA = "Mozilla/5.0 (compatible; AAUWebSearch/0.4.2; +https://web-search-api-m30a.onrender.com)";
-const DISCOVERY_CACHE_VERSION = 61;
+const DISCOVERY_CACHE_VERSION = 62;
 const OFFICIAL_CORPUS_CACHE_VERSION = 3;
 const OFFICIAL_CORPUS_TTL_SECONDS = 21600;
 const providerNextAllowedAt = new Map();
@@ -229,17 +229,32 @@ function rowHasPersonRole(row) {
 function passesGeneralCoverage(row, analysis) {
   if (analysis?.strictPrecision) return true;
   if (analysis?.intent?.startsWith("technical")) return true;
-  if (row?.provider === "parallel-search") return true;
 
   const anchors = Array.isArray(analysis?.anchors) ? analysis.anchors : [];
   if (anchors.length < 2) return true;
 
   if (
     (analysis?.descriptivePhrases || []).length &&
-    descriptivePersonRoleRequired(analysis) &&
-    !rowHasPersonRole(row)
+    descriptivePersonRoleRequired(analysis)
   ) {
-    return false;
+    if (!rowHasPersonRole(row)) return false;
+
+    const hay = normalizedWordString(
+      (row?.title || "") + " " + (row?.snippet || "") + " " + (row?.url || "")
+    );
+    const nonPersonAnchors = anchors.filter(
+      (anchor) => !PERSON_QUERY_TERMS.has(String(anchor || "").toLowerCase())
+    );
+    const nonPersonHits = nonPersonAnchors.filter((anchor) =>
+      hayHasQueryForm(hay, anchor)
+    ).length;
+
+    if (
+      nonPersonAnchors.length &&
+      nonPersonHits < Math.min(2, nonPersonAnchors.length)
+    ) {
+      return false;
+    }
   }
 
   const { anchorHits, phraseHits } = rowCoverage(row, analysis);
