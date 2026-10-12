@@ -426,7 +426,7 @@ async function discoverParallel(query, limit, analysis = {}) {
   }
 
   const items = Array.isArray(json?.results) ? json.results : [];
-  const rows = items.map((item, index) => {
+  const rows = items.map((item) => {
     const excerpts = Array.isArray(item?.excerpts)
       ? item.excerpts.filter(Boolean).map(String)
       : item?.excerpt
@@ -435,26 +435,20 @@ async function discoverParallel(query, limit, analysis = {}) {
 
     const snippet = excerpts.join(" ").replace(/\s+/g, " ").trim().slice(0, 5000);
 
-    return normalizeRow(
-      {
-        title: item?.title || item?.name || item?.url || null,
-        url: item?.url,
-        snippet: snippet || item?.description || null,
-        publishedAt:
-          item?.published_at ||
-          item?.publishedAt ||
-          item?.publication_date ||
-          item?.date ||
-          null,
-        provider: "parallel-search",
-        rank: index + 1
-      },
-      "parallel-search",
-      index + 1
-    );
-  }).filter(Boolean);
+    return {
+      title: item?.title || item?.name || item?.url || null,
+      url: item?.url,
+      snippet: snippet || item?.description || null,
+      publishedAt:
+        item?.published_at ||
+        item?.publishedAt ||
+        item?.publication_date ||
+        item?.date ||
+        null
+    };
+  });
 
-  return rows.slice(0, limit);
+  return normalizeRows(rows, "parallel-search").slice(0, limit);
 }
 
 async function discoverSearx(query, limit, category = "general") {
