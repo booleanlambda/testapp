@@ -6,7 +6,7 @@ import amqp from "amqplib";
 import { crawlSite, validatePublicUrl } from "./crawler.js";
 import { searchIndex } from "./search.js";
 import { liveSearch } from "./live-search.js";
-import { discoverWeb } from "./discovery.js";
+import { discoverWeb, diagnoseDiscoveryProviders } from "./discovery.js";
 import { searchImages } from "./image-search.js";
 import { searchVideos } from "./video-search.js";
 import { humanSearchPage } from "./human-ui.js";
@@ -707,6 +707,23 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+async function runProviderHealthProbe() {
+  for (const query of [
+    "Jersey Devil legends",
+    "The restless guy of jersey"
+  ]) {
+    try {
+      const result = await diagnoseDiscoveryProviders(query, 8);
+      console.log("DISCOVERY_PROVIDER_HEALTH", JSON.stringify(result));
+    } catch (error) {
+      console.error("DISCOVERY_PROVIDER_HEALTH_FAIL", JSON.stringify({
+        query,
+        error: String(error?.message || error)
+      }));
+    }
+  }
+}
+
 async function runFolkloreRelevanceProbe() {
   const cases = [
     "The restless guy of jersey",
@@ -1146,6 +1163,7 @@ server.listen(port, "0.0.0.0", async () => {
   const runMediaProbeEnabled = process.env.RUN_STARTUP_MEDIA_PROBE === "1";
   const runHumanSurfaceProbeEnabled = process.env.RUN_STARTUP_HUMAN_SURFACE_PROBE === "1";
   const runFolkloreRelevanceProbeEnabled = process.env.RUN_STARTUP_FOLKLORE_RELEVANCE_PROBE === "1";
+  const runProviderHealthProbeEnabled = process.env.RUN_STARTUP_PROVIDER_HEALTH_PROBE === "1";
   const runFullRegressions = process.env.RUN_STARTUP_REGRESSIONS === "1";
 
   if (runLatencyProbe) {
@@ -1164,12 +1182,17 @@ server.listen(port, "0.0.0.0", async () => {
     void runFolkloreRelevanceProbe();
   }
 
+  if (runProviderHealthProbeEnabled) {
+    void runProviderHealthProbe();
+  }
+
   if (!runFullRegressions) {
     console.log("startup regressions disabled", JSON.stringify({
       latencyProbe: runLatencyProbe,
       mediaProbe: runMediaProbeEnabled,
       humanSurfaceProbe: runHumanSurfaceProbeEnabled,
       folkloreRelevanceProbe: runFolkloreRelevanceProbeEnabled,
+      providerHealthProbe: runProviderHealthProbeEnabled,
       fullRegressions: false
     }));
     return;
