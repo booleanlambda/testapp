@@ -714,7 +714,9 @@ const server = http.createServer(async (req, res) => {
 
 async function runParallelEnvNameProbe() {
   const names = Object.keys(process.env)
-    .filter((key) => /parallel|aau.*saau|saau.*aau/i.test(key))
+    .filter((key) =>
+      /parallel|aau.*saau|saau.*aau|crawler.*env.*probe/i.test(key)
+    )
     .sort()
     .slice(0, 25);
 
